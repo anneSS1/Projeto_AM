@@ -29,8 +29,14 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     classification_report,
-    confusion_matrix
+    confusion_matrix,
+    precision_recall_curve,
+    average_precision_score,
+    roc_curve,
+    auc
 )
+from sklearn.preprocessing import label_binarize
+from sklearn.inspection import permutation_importance
 
 sns.set(style="whitegrid")
 
@@ -105,6 +111,7 @@ def tabela_por_classe(model, X_val, y_val, labels=None):
 def plot_metric_bars(df_metrics: pd.DataFrame, metrics=("accuracy", "f1_macro"), figsize=(8, 5)):
     """
     Plota barras comparando modelos nas métricas especificadas.
+    df_metrics deve ter índice = nome do modelo e colunas com métricas.
     """
     df_plot = df_metrics[list(metrics)]
 
@@ -130,7 +137,10 @@ def plot_confusion_matrix_model(model, X_val, y_val, labels=None, normalize=Fals
     cm = confusion_matrix(y_val, y_pred, labels=labels)
 
     if normalize:
-        cm = cm.astype(float) / cm.sum(axis=1)[:, None]
+        # evitar divisão por zero
+        row_sums = cm.sum(axis=1)[:, None]
+        with np.errstate(all='ignore'):
+            cm = np.divide(cm.astype(float), row_sums, where=row_sums != 0)
         fmt = ".2f"
     else:
         fmt = "d"
@@ -162,7 +172,9 @@ def comparar_modelos_plot_confusao(modelos: dict, X_val, y_val, labels=None,
         cm = confusion_matrix(y_val, y_pred, labels=labels)
 
         if normalize:
-            cm = cm.astype(float) / cm.sum(axis=1)[:, None]
+            row_sums = cm.sum(axis=1)[:, None]
+            with np.errstate(all='ignore'):
+                cm = np.divide(cm.astype(float), row_sums, where=row_sums != 0)
 
         ax = plt.subplot(rows, cols, i + 1)
         sns.heatmap(cm, annot=True, fmt=".2f" if normalize else "d",
@@ -230,6 +242,8 @@ def teste_mcnemar(model1, model2, X_val, y_val):
     y1 = model1.predict(X_val)
     y2 = model2.predict(X_val)
 
+    # construir tabela 2x2: [ (acerto/acerto), (acerto/erro); (erro/acerto), (erro/erro) ]
+    # a convenção usada abaixo conta erros
     tabela = [[0, 0], [0, 0]]
 
     for y_true, a, b in zip(y_val, y1, y2):
@@ -237,3 +251,211 @@ def teste_mcnemar(model1, model2, X_val, y_val):
 
     result = mcnemar(tabela, exact=False, correction=True)
     return result.pvalue
+
+
+# ======================================================================
+# 6. Curvas Precision-Recall e ROC multiclass
+# ======================================================================
+
+def plot_precision_recall_multiclass(models, X, y, label_encoder=None, figsize=(8, 6)):
+    """
+    Plota curvas Precision-Recall para cada classe (multiclass).
+    models: dict[name] = model OR model (single)
+    Se for dict, plota para cada modelo (uma figura por modelo).
+    label_encoder: opcional, para obter nomes das classes; caso contrário usa labels numéricos.
+    """
+    # helper interno: processa um par (name, model)
+    def _plot_for(name, model):
+        y_true = y
+        classes = np.unique(y_true)
+        n_classes = len(classes)
+        # binarizar rótulos
+        y_bin = label_binarize(y_true, classes=classes)
+
+        # tentar obter probabilidades
+        if hasattr(model, "predict_proba"):
+            y_score = model.predict_proba(X)
+        else:
+            # fallback: determinístico (one-hot da predição)
+            preds = model.predict(X)
+            y_score = np.zeros((len(preds), n_classes))
+            for i, p in enumerate(preds):
+                y_score[i, p] = 1.0
+
+        plt.figure(figsize=figsize)
+        for i, cls in enumerate(classes):
+            precision, recall, _ = precision_recall_curve(y_bin[:, i], y_score[:, i])
+            ap = average_precision_score(y_bin[:, i], y_score[:, i])
+            plt.plot(recall, precision, lw=2, label=f"classe {cls} (AP={ap:.2f})")
+
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(f"Precision-Recall Curve — {name}")
+        plt.legend(loc="best")
+        plt.grid(True)
+        plt.show()
+
+    if isinstance(models, dict):
+        for name, model in models.items():
+            _plot_for(name, model)
+    else:
+        _plot_for("model", models)
+
+
+def plot_roc_multiclass(models, X, y, label_encoder=None, figsize=(8, 6)):
+    """
+    Plota ROC multiclass (curvas por classe e AUC macro) para cada modelo.
+    """
+    def _plot_for(name, model):
+        y_true = y
+        classes = np.unique(y_true)
+        n_classes = len(classes)
+        y_bin = label_binarize(y_true, classes=classes)
+
+        # obter probabilidades / scores
+        if hasattr(model, "predict_proba"):
+            y_score = model.predict_proba(X)
+        else:
+            # usar predição dura como fallback
+            preds = model.predict(X)
+            y_score = np.zeros((len(preds), n_classes))
+            for i, p in enumerate(preds):
+                y_score[i, p] = 1.0
+
+        # curvas por classe
+        plt.figure(figsize=figsize)
+        aucs = []
+        for i, cls in enumerate(classes):
+            fpr, tpr, _ = roc_curve(y_bin[:, i], y_score[:, i])
+            auc_val = auc(fpr, tpr)
+            aucs.append(auc_val)
+            plt.plot(fpr, tpr, label=f"Classe {cls} (AUC={auc_val:.2f})")
+
+        # micro-average (opcional)
+        # construir fpr/tpr micro
+        try:
+            fpr_micro, tpr_micro, _ = roc_curve(y_bin.ravel(), y_score.ravel())
+            auc_micro = auc(fpr_micro, tpr_micro)
+            plt.plot(fpr_micro, tpr_micro, linestyle="--", label=f"micro (AUC={auc_micro:.2f})")
+        except Exception:
+            pass
+
+        plt.plot([0, 1], [0, 1], 'k--', alpha=0.4)
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(f"ROC Multiclass — {name}")
+        plt.legend(loc="lower right")
+        plt.grid(True)
+        plt.show()
+
+    if isinstance(models, dict):
+        for name, model in models.items():
+            _plot_for(name, model)
+    else:
+        _plot_for("model", models)
+
+
+# ======================================================================
+# 7. Importância de features
+# ======================================================================
+
+def importancia_features_modelo(model, X, y, feature_names=None, top_k=20, random_state=42):
+    """
+    Tenta estimar a importância das features para um modelo.
+    Estratégias:
+      - Se model tem coef_ (ex: LogisticRegression), usa coef absoluto médio por classe.
+      - Caso contrário, usa permutation importance (scikit-learn).
+    Retorna DataFrame ordenado por importância.
+    """
+    # tentar coef_
+    try:
+        coef = getattr(model, "coef_", None)
+        if coef is not None:
+            # coef shape (n_classes, n_features) ou (n_features,)
+            coef_arr = np.array(coef)
+            if coef_arr.ndim == 1:
+                imp = np.abs(coef_arr)
+            else:
+                # média absoluta entre classes
+                imp = np.mean(np.abs(coef_arr), axis=0)
+            names = feature_names if feature_names is not None else [f"f{i}" for i in range(len(imp))]
+            df_imp = pd.DataFrame({"feature": names, "importance": imp})
+            df_imp = df_imp.sort_values("importance", ascending=False).reset_index(drop=True)
+            return df_imp.head(top_k)
+    except Exception:
+        pass
+
+    # fallback: permutation importance
+    try:
+        r = permutation_importance(model, X, y, n_repeats=20, random_state=random_state, n_jobs=-1)
+        imp = r.importances_mean
+        names = feature_names if feature_names is not None else [f"f{i}" for i in range(len(imp))]
+        df_imp = pd.DataFrame({"feature": names, "importance": imp})
+        df_imp = df_imp.sort_values("importance", ascending=False).reset_index(drop=True)
+        return df_imp.head(top_k)
+    except Exception as e:
+        print("Falha ao calcular importância:", e)
+        return pd.DataFrame({"feature": [], "importance": []})
+
+
+def plot_importancia(df_imp, figsize=(8, 6), top_k=15):
+    """
+    Plota um barplot de importância (DataFrame com colunas 'feature' e 'importance').
+    """
+    if df_imp.empty:
+        print("Nenhuma importância para mostrar.")
+        return
+
+    df_plot = df_imp.head(top_k).copy()
+    plt.figure(figsize=figsize)
+    sns.barplot(x="importance", y="feature", data=df_plot, orient="h")
+    plt.title("Importância das Features")
+    plt.tight_layout()
+    plt.show()
+
+
+# ======================================================================
+# 8. Análise de erros / Confusões detalhadas
+# ======================================================================
+
+def analise_erros_por_classe(model, X_val, y_val, feature_df=None, labels=None):
+    """
+    Analisa exemplos errados por classe: retorna DataFrame com contagem de falsos positivos,
+    falsos negativos e exemplos confusos. Se feature_df for fornecido (DataFrame original das features),
+    também calcula médias das features onde ocorrem erros para entender padrões.
+    """
+    y_pred = model.predict(X_val)
+    classes = labels if labels is not None else np.unique(np.concatenate([y_val, y_pred]))
+
+    rows = []
+    for cls in classes:
+        # falsos negativos: verdadeiros cls, predito != cls
+        fn_idx = np.where((y_val == cls) & (y_pred != cls))[0]
+        # falsos positivos: predito cls, verdade != cls
+        fp_idx = np.where((y_val != cls) & (y_pred == cls))[0]
+        # verdadeiros corretos
+        tp_idx = np.where((y_val == cls) & (y_pred == cls))[0]
+
+        row = {
+            "classe": cls,
+            "FN_count": len(fn_idx),
+            "FP_count": len(fp_idx),
+            "TP_count": len(tp_idx),
+            "FN_percent": len(fn_idx) / max(1, len(y_val)),
+            "FP_percent": len(fp_idx) / max(1, len(y_val))
+        }
+
+        # se feature_df fornecido, calcular média das features nos erros
+        if feature_df is not None:
+            try:
+                fn_mean = feature_df.iloc[fn_idx].mean().to_dict() if len(fn_idx) > 0 else {}
+                fp_mean = feature_df.iloc[fp_idx].mean().to_dict() if len(fp_idx) > 0 else {}
+                row["FN_feature_mean"] = fn_mean
+                row["FP_feature_mean"] = fp_mean
+            except Exception:
+                row["FN_feature_mean"] = {}
+                row["FP_feature_mean"] = {}
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)

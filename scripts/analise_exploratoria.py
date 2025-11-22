@@ -192,3 +192,34 @@ def pairplot_amostrado(df: pd.DataFrame, n_amostras=300, n_features=5):
     sns.pairplot(sample[cols], hue="classe" if "classe" in df.columns else None,
                  height=2.0, diag_kind="kde")
     plt.show()
+
+
+
+# ################################################################
+# 6. Análise de séries temporais
+# ################################################################
+def plot_series_temporais(df, colunas):
+    print("\n--- Séries Temporais ---")
+
+    for col in colunas:
+        if col not in df.columns:
+            print(f"⚠️ Coluna {col} não encontrada.")
+            continue
+        
+        plt.figure(figsize=(12,4))
+        plt.plot(df[col].values)
+        plt.title(f"Série Temporal – {col}")
+        plt.xlabel("Tempo (amostra)")
+        plt.ylabel(col)
+        plt.tight_layout()
+        plt.show()
+
+
+################################################################
+# 7. Scatter plot duplo
+################################################################
+def scatter_duplo(df, x, y):
+    plt.figure(figsize=(6,4))
+    sns.scatterplot(data=df, x=x, y=y, hue="classe", alpha=0.6)
+    plt.title(f"{x} vs {y}")
+    plt.show()

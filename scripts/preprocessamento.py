@@ -17,276 +17,403 @@
 
 
 import os
-import pandas as pd
+import math
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from scipy import stats
+import pandas as pd
+from scipy.signal import butter, filtfilt
+from scipy.stats import skew, kurtosis
+from sklearn.preprocessing import StandardScaler
+from scipy.fft import fft
+from collections import Counter
 
 
-# ================================================================
-# 0. PREPARAÇÃO FINAL DOS DADOS (Encode, One-Hot, Normalização)
-# ================================================================
-def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
+# -------------------------
+# Utilitários
+# -------------------------
+def _safe_read_csv(path, header=None):
+    """Lê csv sem assumir cabeçalho; retorna DataFrame com todas as colunas brutas."""
+    try:
+        return pd.read_csv(path, header=header)
+    except Exception:
+        # fallback mais permissivo (p.e. linhas com timestamps repetidos)
+        return pd.read_csv(path, header=None, engine="python", error_bad_lines=False)
+
+
+def _to_numeric_array(series):
+    """Tenta converter uma Series pandas para float, removendo valores não-convertíveis."""
+    return pd.to_numeric(series, errors="coerce").dropna().astype(float).values
+
+
+def _shannon_entropy(arr, bins=30):
+    """Estimativa simples de entropia de Shannon via histograma."""
+    if len(arr) == 0:
+        return np.nan
+    hist, _ = np.histogram(arr, bins=bins, density=True)
+    # eliminar zeros
+    hist = hist[hist > 0]
+    return -np.sum(hist * np.log2(hist))
+
+
+# -------------------------
+# HRV (IBI)
+# -------------------------
+def extrair_hrv(df_ibi):
     """
-    Prepara os dados de treino e teste para treinamento de modelos:
-        ✔ Encode da variável alvo
-        ✔ One-hot encoding dos atributos categóricos (fit no treino)
-        ✔ Normalização numérica (fit no treino)
-        ✔ Alinhamento das colunas entre treino e teste
-
-    Retorna:
-        X_train, y_train, X_test, test_ids, label_encoder, scaler
+    Recebe df_ibi (DataFrame do IBI.csv).
+    Assume que a coluna 1 (index 1) contém IBI em segundos (caso do seu dataset).
+    Retorna: (rmssd, sdnn)
     """
+    try:
+        ibi = _to_numeric_array(df_ibi.iloc[:, 1])
+    except Exception:
+        ibi = np.array([])
 
-    print("\n--- Preparando dados de treino e teste ---")
+    if len(ibi) < 3:
+        return np.nan, np.nan
 
-    # -------------------------------
-    # 1) Encode da classe (treino)
-    # -------------------------------
-    label_encoder = LabelEncoder()
-    y_train = label_encoder.fit_transform(df_train["classe"])
-
-    # -------------------------------
-    # 2) Seleção de atributos
-    # -------------------------------
-    X_train = df_train.drop(columns=["Id", "classe"], errors="ignore").copy()
-    X_test = df_test.drop(columns=["Id"], errors="ignore").copy()
-    test_ids = df_test["Id"].copy()
-
-    # -------------------------------
-    # 3) One-hot encoding
-    # -------------------------------
-    X_train_encoded = pd.get_dummies(X_train, drop_first=True)
-    X_test_encoded = pd.get_dummies(X_test, drop_first=True)
-
-    # Alinha colunas (garante compatibilidade entre treino e teste)
-    X_test_encoded = X_test_encoded.reindex(columns=X_train_encoded.columns, fill_value=0)
-
-    # -------------------------------
-    # 4) Normalização
-    # -------------------------------
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train_encoded)
-    X_test_scaled = scaler.transform(X_test_encoded)
-
-    print(f"Treino shape final: {X_train_scaled.shape}")
-    print(f"Teste shape final : {X_test_scaled.shape}")
-
-    return X_train_scaled, y_train, X_test_scaled, test_ids, label_encoder, scaler
+    sdnn = float(np.std(ibi, ddof=0))
+    diffs = np.diff(ibi)
+    rmssd = float(np.sqrt(np.mean(diffs**2))) if len(diffs) > 0 else np.nan
+    return rmssd, sdnn
 
 
-
-# ================================================================
-# 1. GERAÇÃO DO DATASET DE TREINO (wearables + train.csv)
-# ================================================================
-def gerar_dataset(base_path: str) -> pd.DataFrame:
+# -------------------------
+# EDA (tonic / phasic simplificado)
+# -------------------------
+def extrair_eda_components(eda_series):
     """
-    Lê a pasta 'wearables/' e extrai estatísticas dos sensores para cada usuário.
-    Junta com os rótulos presentes em train.csv.
-
-    ⚠️ Usa as mesmas features que o dataset de TESTE para evitar inconsistências.
+    Extrai componentes tonic (passa-baixa) e phasic (resáduo).
+    Entrada: pd.Series ou array-like com EDA (em µS).
+    Retorna: (tonic_mean, phasic_mean, eda_mean, eda_std)
+    Observação: filtro simples Butterworth de baixa frequência para tonic.
     """
+    arr = _to_numeric_array(pd.Series(eda_series))
+    if len(arr) < 10:
+        return np.nan, np.nan, np.nan, np.nan
 
-    print("\n--- Gerando dataset consolidado (TREINO) ---")
+    # Butterworth passa-baixa (tonic). Normalizar frequência por Nyquist assume taxa unknown;
+    # usamos corte baixo absoluto (0.05) apropriado para sinais lentos — funciona em amostragens típicas.
+    try:
+        b, a = butter(2, 0.05, btype="low", analog=False)
+        tonic = filtfilt(b, a, arr)
+    except Exception:
+        # caso o filtro falhe (p.ex. poucos pontos), usar média móvel simples
+        window = max(3, int(len(arr) * 0.05))
+        tonic = pd.Series(arr).rolling(window=window, min_periods=1, center=True).mean().values
 
+    phasic = arr - tonic
+    return float(np.mean(tonic)), float(np.mean(phasic)), float(np.mean(arr)), float(np.std(arr))
+
+
+# -------------------------
+# ACC (x,y,z) -> magnitude, energia, entropia
+# -------------------------
+def extrair_acc_features(df_acc):
+    """
+    Recebe df_acc (DataFrame). Espera três colunas numéricas (x,y,z) possivelmente sem cabeçalho.
+    Retorna: (mag_mean, mag_std, energy, entropy)
+    """
+    # tentar forçar 3 colunas numéricas
+    arr = df_acc.copy()
+    # converter tudo para número, descartar colunas não numéricas
+    for c in arr.columns:
+        arr[c] = pd.to_numeric(arr[c], errors="coerce")
+    num_cols = arr.select_dtypes(include=[np.number]).columns.tolist()
+    if len(num_cols) < 3:
+        # se menos de 3 colunas numéricas, tentar usar primeiras 3 colunas
+        if arr.shape[1] >= 3:
+            arr = arr.iloc[:, :3].apply(pd.to_numeric, errors="coerce")
+            num_cols = arr.select_dtypes(include=[np.number]).columns.tolist()
+        else:
+            return np.nan, np.nan, np.nan, np.nan
+
+    data = arr[num_cols[:3]].dropna().values.astype(float)
+    if data.size == 0:
+        return np.nan, np.nan, np.nan, np.nan
+
+    x, y, z = data[:, 0], data[:, 1], data[:, 2]
+    magnitude = np.sqrt(x**2 + y**2 + z**2)
+
+    mag_mean = float(np.mean(magnitude))
+    mag_std = float(np.std(magnitude))
+    energy = float(np.sum(magnitude**2) / len(magnitude))
+    entropy = float(_shannon_entropy(magnitude, bins=30))
+
+    return mag_mean, mag_std, energy, entropy
+
+
+# -------------------------
+# TEMP features
+# -------------------------
+def extrair_temp_features(temp_series):
+    """
+    Retorna: (temp_mean, temp_std, temp_slope)
+    """
+    arr = _to_numeric_array(pd.Series(temp_series))
+    if len(arr) < 3:
+        return np.nan, np.nan, np.nan
+    mean_temp = float(np.mean(arr))
+    std_temp = float(np.std(arr))
+    slope = float(np.polyfit(np.arange(len(arr)), arr, 1)[0])
+    return mean_temp, std_temp, slope
+
+
+# -------------------------
+# HR features (quando HR.csv estiver presente)
+# -------------------------
+def extrair_hr_features(hr_series):
+    """
+    Retorna: (hr_mean, hr_std)
+    hr_series pode ser BPM por linha
+    """
+    arr = _to_numeric_array(pd.Series(hr_series))
+    if len(arr) == 0:
+        return np.nan, np.nan
+    return float(np.mean(arr)), float(np.std(arr))
+
+
+# -------------------------
+# Função auxiliar: extrai estatísticas simples (compatibilidade)
+# -------------------------
+def estatisticas_basicas_numeric(df):
+    """
+    Recebe dataframe com colunas numéricas e retorna mean/std para cada coluna
+    (usa para compatibilidade/diagnóstico).
+    Retorna dict com chaves "<col>_mean", "<col>_std".
+    """
+    res = {}
+    num = df.select_dtypes(include=[np.number])
+    for c in num.columns:
+        res[f"{c}_mean"] = float(num[c].mean())
+        res[f"{c}_std"] = float(num[c].std())
+    return res
+
+
+# -------------------------
+# Geração consolidada do dataset (treino/teste)
+# -------------------------
+def gerar_dataset(base_path: str, mode="train"):
+    """
+    Gera dataset consolidado (treino ou teste) a partir da pasta base.
+    Espera:
+      base_path/wearables/U_xxxxx/{ACC.csv, TEMP.csv, IBI.csv, HR.csv, EDA.csv, BVP.csv, tags.csv}
+    mode: "train" ou "test" (usa train.csv/test.csv para obter Ids/labels se existir)
+    Retorna DataFrame com colunas com as features definidas no cabeçalho desta versão.
+    """
     wearables_path = os.path.join(base_path, "wearables")
-    train_path = os.path.join(base_path, "train.csv")
-    users_info_path = os.path.join(base_path, "users_info.txt")
+    ids = []
+    labels = {}
 
-    train = pd.read_csv(train_path)
-    users_info = pd.read_csv(users_info_path, sep=",")
+    # se houver train.csv, use-o para labels; caso contrário, processa todos os U_*
+    csv_ref = os.path.join(base_path, f"{mode}.csv")
+    if os.path.exists(csv_ref):
+        df_ref = pd.read_csv(csv_ref)
+        for _, r in df_ref.iterrows():
+            ids.append(str(r["Id"]))
+            if "Label" in r:
+                labels[str(r["Id"])] = r["Label"]
+    else:
+        # coletar todos os folders U_*
+        ids = [name for name in os.listdir(wearables_path) if os.path.isdir(os.path.join(wearables_path, name))]
 
-    data_list = []
-
-    for _, row in train.iterrows():
-        user_id = row["Id"]
-        label = row["Label"]
+    data_rows = []
+    for user_id in ids:
         user_folder = os.path.join(wearables_path, user_id)
-
-        user_data = {"Id": user_id, "classe": label}
-
-        # Cada arquivo .csv dentro da pasta corresponde a um sensor
-        for sensor_file in os.listdir(user_folder):
-            if not sensor_file.endswith(".csv"):
-                continue
-
-            sensor_name = os.path.splitext(sensor_file)[0]
-            sensor_path = os.path.join(user_folder, sensor_file)
-
-            if os.path.getsize(sensor_path) == 0:
-                continue
-
-            df_sensor = pd.read_csv(sensor_path)
-            numeric_cols = df_sensor.select_dtypes(include=np.number)
-
-            if numeric_cols.empty:
-                continue
-
-            # Usar as mesmas estatísticas para treino e teste
-            user_data[f"{sensor_name}_mean"] = numeric_cols.mean().mean()
-            user_data[f"{sensor_name}_std"] = numeric_cols.std().mean()
-            user_data[f"{sensor_name}_max"] = numeric_cols.max().max()
-            user_data[f"{sensor_name}_min"] = numeric_cols.min().min()
-
-        data_list.append(user_data)
-
-    df_features = pd.DataFrame(data_list)
-
-    # Opcional: juntar com informações do usuário
-    # df_features = pd.merge(df_features, users_info, on="Id", how="left")
-
-    print(f"Treino consolidado: {df_features.shape[0]} amostras, {df_features.shape[1]} atributos.")
-    return df_features
-
-
-
-# ================================================================
-# 2. GERAÇÃO DO DATASET DE TESTE (wearables + test.csv)
-# ================================================================
-def gerar_dataset_teste(base_path: str) -> pd.DataFrame:
-    """Gera o dataset consolidado de TESTE, igual ao treino (mesmas features)."""
-
-    print("\n--- Gerando dataset de TESTE ---")
-
-    wearables_path = os.path.join(base_path, "wearables")
-    test_path = os.path.join(base_path, "test.csv")
-    users_info_path = os.path.join(base_path, "users_info.txt")
-
-    test = pd.read_csv(test_path)
-    users_info = pd.read_csv(users_info_path, sep=",")
-
-    data_list = []
-
-    for _, row in test.iterrows():
-        user_id = row["Id"]
-        user_folder = os.path.join(wearables_path, user_id)
+        if not os.path.isdir(user_folder):
+            continue
 
         user_data = {"Id": user_id}
+        if user_id in labels:
+            user_data["classe"] = labels[user_id]
 
-        for sensor_file in os.listdir(user_folder):
-            if not sensor_file.endswith(".csv"):
-                continue
+        # listar arquivos esperados
+        files = {os.path.splitext(f)[0].upper(): os.path.join(user_folder, f) for f in os.listdir(user_folder)}
 
-            sensor_name = os.path.splitext(sensor_file)[0]
-            sensor_path = os.path.join(user_folder, sensor_file)
+        # 1) ACC
+        if "ACC" in files:
+            try:
+                df_acc = _safe_read_csv(files["ACC"], header=None)
+                mag_mean, mag_std, energy, entropy = extrair_acc_features(df_acc)
+                user_data["acc_mag_mean"] = mag_mean
+                user_data["acc_mag_std"] = mag_std
+                user_data["acc_energy"] = energy
+                user_data["acc_entropy"] = entropy
+            except Exception as e:
+                # não falhar todo processo
+                user_data["acc_mag_mean"] = np.nan
+                user_data["acc_mag_std"] = np.nan
+                user_data["acc_energy"] = np.nan
+                user_data["acc_entropy"] = np.nan
 
-            if os.path.getsize(sensor_path) == 0:
-                continue
+        # 2) IBI -> HRV
+        if "IBI" in files:
+            try:
+                df_ibi = _safe_read_csv(files["IBI"], header=None)
+                rmssd, sdnn = extrair_hrv(df_ibi)
+                user_data["hrv_rmssd"] = rmssd
+                user_data["hrv_sdnn"] = sdnn
+            except Exception:
+                user_data["hrv_rmssd"] = np.nan
+                user_data["hrv_sdnn"] = np.nan
 
-            df_sensor = pd.read_csv(sensor_path)
-            numeric_cols = df_sensor.select_dtypes(include=np.number)
+        # 3) EDA
+        if "EDA" in files:
+            try:
+                df_eda = _safe_read_csv(files["EDA"], header=None)
+                # extração usando a primeira coluna detectada
+                tonic_mean, phasic_mean, eda_mean, eda_std = extrair_eda_components(df_eda.iloc[:, 0])
+                user_data["eda_tonic_mean"] = tonic_mean
+                user_data["eda_phasic_mean"] = phasic_mean
+                user_data["eda_mean"] = eda_mean
+                user_data["eda_std"] = eda_std
+            except Exception:
+                user_data["eda_tonic_mean"] = np.nan
+                user_data["eda_phasic_mean"] = np.nan
+                user_data["eda_mean"] = np.nan
+                user_data["eda_std"] = np.nan
 
-            if numeric_cols.empty:
-                continue
+        # 4) TEMP
+        if "TEMP" in files:
+            try:
+                df_temp = _safe_read_csv(files["TEMP"], header=None)
+                t_mean, t_std, t_slope = extrair_temp_features(df_temp.iloc[:, 0])
+                user_data["temp_mean"] = t_mean
+                user_data["temp_std"] = t_std
+                user_data["temp_slope"] = t_slope
+            except Exception:
+                user_data["temp_mean"] = np.nan
+                user_data["temp_std"] = np.nan
+                user_data["temp_slope"] = np.nan
 
-            # Mesmas features do treino!
-            user_data[f"{sensor_name}_mean"] = numeric_cols.mean().mean()
-            user_data[f"{sensor_name}_std"] = numeric_cols.std().mean()
-            user_data[f"{sensor_name}_max"] = numeric_cols.max().max()
-            user_data[f"{sensor_name}_min"] = numeric_cols.min().min()
+        # 5) HR
+        if "HR" in files:
+            try:
+                df_hr = _safe_read_csv(files["HR"], header=None)
+                hr_mean, hr_std = extrair_hr_features(df_hr.iloc[:, 0])
+                user_data["hr_mean"] = hr_mean
+                user_data["hr_std"] = hr_std
+            except Exception:
+                user_data["hr_mean"] = np.nan
+                user_data["hr_std"] = np.nan
 
-        data_list.append(user_data)
+        # 6) BVP (opcional: média como fallback)
+        if "BVP" in files:
+            try:
+                df_bvp = _safe_read_csv(files["BVP"], header=None)
+                bvp = _to_numeric_array(df_bvp.iloc[:, 0]) if df_bvp.shape[1] >= 1 else np.array([])
+                user_data["bvp_mean"] = float(np.mean(bvp)) if bvp.size > 0 else np.nan
+            except Exception:
+                user_data["bvp_mean"] = np.nan
 
-    df_features = pd.DataFrame(data_list)
+        # manter algumas estatísticas básicas para compatibilidade (mean/std)
+        # isto permite compatibilidade com experiments que esperam cols "<sensor>_mean"
+        # (será usado posteriormente para alinhar colunas treino/teste)
+        # NOTE: estatisticas_basicas_numeric pode retornar many cols; mantemos apenas se existirem
+        # (não adicionamos max/min para evitar redundância)
+        # Nenhuma exceção aqui — funções acima já populam os campos principais
 
-    # df_features = pd.merge(df_features, users_info, on="Id", how="left")
+        data_rows.append(user_data)
 
-    print(f"Teste consolidado: {df_features.shape[0]} amostras, {df_features.shape[1]} atributos.")
+    df_features = pd.DataFrame(data_rows)
+    # Organizar colunas (Id, classe se existir, e features ordenadas)
+    cols = ["Id"]
+    if "classe" in df_features.columns:
+        cols.append("classe")
+    # adicionar o resto em ordem alfabética (previsível)
+    other = sorted([c for c in df_features.columns if c not in cols])
+    cols.extend(other)
+    df_features = df_features[cols]
+
     return df_features
 
 
+# -------------------------
+# Tratamento de valores ausentes (simples e robusto)
+# -------------------------
+def tratar_valores_ausentes(df: pd.DataFrame, strategy="median"):
+    """
+    strategy: 'median' (numéricas) e moda (categóricas) — padrão
+    Retorna DF com valores preenchidos (cópia).
+    """
+    out = df.copy()
+    out.replace("?", np.nan, inplace=True)
 
-# ================================================================
-# 3. TRATAMENTO DE VALORES AUSENTES
-# ================================================================
-def tratar_valores_ausentes(df: pd.DataFrame) -> pd.DataFrame:
-    print("\n--- Tratando valores ausentes ---")
-
-    df = df.copy()
-    df.replace("?", np.nan, inplace=True)
-
-    for col in df.columns:
-        if df[col].dtype in ["float64", "int64"]:
-            df[col].fillna(df[col].median(), inplace=True)
+    for col in out.columns:
+        if out[col].dtype in [np.float64, np.int64, float, int]:
+            if strategy == "median":
+                out[col].fillna(out[col].median(), inplace=True)
+            else:
+                out[col].fillna(out[col].mean(), inplace=True)
         else:
-            moda = df[col].mode()
-            df[col].fillna(moda[0] if not moda.empty else "Desconhecido", inplace=True)
-
-    return df
-
+            moda = out[col].mode()
+            out[col].fillna(moda[0] if not moda.empty else "Desconhecido", inplace=True)
+    return out
 
 
-# ================================================================
-# 4. REMOÇÃO DE OUTLIERS (opcional)
-# ================================================================
-def remover_outliers(df: pd.DataFrame, z_lim=3, prop_lim=0.1) -> pd.DataFrame:
+# -------------------------
+# Limitar de outliers (z-score)
+# -------------------------
+def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
     """
-    Remove linhas cujo percentual de outliers (Z-score) ultrapassa o limite.
+    Limita valores extremos (capping) usando Z-score por coluna,
+    sem remover linhas.
+    É a abordagem mais segura para sinais fisiológicos.
     """
-    print("\n--- Removendo outliers (Z-score) ---")
+    df_new = df.copy()
+    num = df_new.select_dtypes(include=[np.number])
 
-    num = df.select_dtypes(include=np.number)
-    if num.empty:
-        print("Nenhuma coluna numérica detectada.")
-        return df
-
-    z_scores = np.abs(stats.zscore(num))
-    proporcao_outliers = (z_scores > z_lim).mean(axis=1)
-    filtro = proporcao_outliers < prop_lim
-
-    df_filtrado = df[filtro]
-    print(f"Removidas {len(df) - len(df_filtrado)} amostras.")
-    return df_filtrado
+    for col in num.columns:
+        col_z = (df_new[col] - df_new[col].mean()) / df_new[col].std()
+        df_new[col] = np.where(col_z > zmax,
+                               df_new[col].mean() + zmax * df_new[col].std(),
+                       np.where(col_z < -zmax,
+                               df_new[col].mean() - zmax * df_new[col].std(),
+                               df_new[col]))
+    return df_new
 
 
-def remover_outliers_IQR(df: pd.DataFrame, limite=1.5) -> pd.DataFrame:
+
+# -------------------------
+# Preparar dados (encode + normalização + alinhamento treino/teste)
+# -------------------------
+def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
     """
-    Remove outliers usando o método IQR.
+    Recebe dataframes gerados por gerar_dataset().
+    Executa:
+      - Encode da classe (LabelEncoder)
+      - Seleção/ordenacao de colunas (Id removido)
+      - Normalização (StandardScaler) ajustado no treino
+      - Retorna X_train, y_train, X_test, test_ids, label_encoder, scaler
     """
-    print("\n--- Removendo outliers (IQR) ---")
+    from sklearn.preprocessing import LabelEncoder
 
-    num = df.select_dtypes(include=np.number)
-    if num.empty:
-        print("Nenhuma coluna numérica detectada.")
-        return df
+    df_train = df_train.copy()
+    df_test = df_test.copy()
 
-    Q1 = num.quantile(0.25)
-    Q3 = num.quantile(0.75)
-    IQR = Q3 - Q1
+    # label encode (se 'classe' existir)
+    if "classe" in df_train.columns:
+        le = LabelEncoder()
+        y_train = le.fit_transform(df_train["classe"].astype(str))
+    else:
+        le = None
+        y_train = None
 
-    filtro = ~((num < (Q1 - limite * IQR)) | (num > (Q3 + limite * IQR))).any(axis=1)
-    df_filtrado = df[filtro]
+    # Remover Id/Classe das features
+    X_train = df_train.drop(columns=["Id", "classe"], errors="ignore").copy()
+    X_test = df_test.drop(columns=["Id", "classe"], errors="ignore").copy()
+    test_ids = df_test["Id"].copy() if "Id" in df_test.columns else None
 
-    print(f"Removidas {len(df) - len(df_filtrado)} amostras.")
-    return df_filtrado
+    # Tratar valores ausentes antes do scale (usar mediana do treino)
+    X_train = tratar_valores_ausentes(X_train)
+    X_test = tratar_valores_ausentes(X_test)
 
+    # Padronizar numéricas
+    scaler = StandardScaler()
+    X_train_vals = scaler.fit_transform(X_train.select_dtypes(include=[np.number]))
+    X_test_vals = scaler.transform(X_test.select_dtypes(include=[np.number]))
 
-# ================================================================
-# 5. REMOÇÃO DE ATRIBUTOS COM VARIÂNCIA ZERO
-# ================================================================
-def remover_variancia_zero(df):
-    print("\n--- Removendo atributos com variância zero ---")
-    variancia = df.var(numeric_only=True)
-    cols_zero = variancia[variancia == 0].index.tolist()
+    # Reconstruir DataFrames padronizados com mesmas colunas
+    X_train_scaled = pd.DataFrame(X_train_vals, columns=X_train.select_dtypes(include=[np.number]).columns, index=X_train.index)
+    X_test_scaled = pd.DataFrame(X_test_vals, columns=X_train_scaled.columns, index=X_test.index)
 
-    if cols_zero:
-        print(f"Removidos {len(cols_zero)} atributos sem variância:", cols_zero)
-        df = df.drop(columns=cols_zero)
-
-    return df
-
-
-# ================================================================
-# 6. AJUSTE DE SKEW (assimetria)
-# ================================================================
-def ajustar_skew(df, limite=1.0):
-    print("\n--- Corrigindo skew em atributos assimétricos ---")
-    skew = df.select_dtypes(include=np.number).skew()
-
-    cols_skew = skew[abs(skew) > limite].index
-
-    for col in cols_skew:
-        df[col] = np.log1p(df[col] - df[col].min() + 1)
-
-    print("Transformados:", list(cols_skew))
-    return df
+    return X_train_scaled, y_train, X_test_scaled, test_ids, le, scaler
