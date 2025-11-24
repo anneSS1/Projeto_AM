@@ -26,6 +26,7 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 
 
 # ===================================================================
@@ -98,6 +99,19 @@ def treinar_svm(X_train, y_train):
     model.fit(X_train, y_train)
     return model
 
+
+def treinar_random_forest(X_train, y_train):
+    """
+    Random Forest com parâmetros padrão (baseline).
+    """
+    print("\n--- Treinando Random Forest ---")
+    model = RandomForestClassifier(
+        n_estimators=100,
+        random_state=42,
+        n_jobs=1
+    )
+    model.fit(X_train, y_train)
+    return model
 
 
 # ===================================================================
@@ -179,6 +193,36 @@ def treinar_mlp_otimizado(X_train, y_train):
     return grid.best_estimator_
 
 
+def treinar_rf_otimizado(X_train, y_train):
+    """
+    Ajuste de hiperparâmetros do Random Forest.
+    """
+    print("\n=== Ajustando Random Forest com GridSearchCV ===")
+
+    param_grid = {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [None, 10, 20],
+        'criterion': ['gini', 'entropy'],
+        'min_samples_split': [2, 5],
+        'min_samples_leaf': [1, 2, 4],
+    }
+
+    grid = GridSearchCV(
+        estimator=RandomForestClassifier(random_state=42, n_jobs=-1),
+        param_grid=param_grid,
+        cv=5,
+        scoring="accuracy",
+        n_jobs=-1
+    )
+
+    grid.fit(X_train, y_train)
+
+    print("Melhores parâmetros:", grid.best_params_)
+    print("Melhor score RF CV:", grid.best_score_)
+
+    return grid.best_estimator_
+
+
 
 # ===================================================================
 # 4. Geração do arquivo de submissão
@@ -187,41 +231,55 @@ def treinar_mlp_otimizado(X_train, y_train):
 def gerar_submissao(model, X_test, test_ids, label_encoder, base_path="dataset",
                     nome_arquivo="submission.csv"):
     """
-    Gera submissão no formato exigido pela competição:
-
-        Id,Predicted_0,Predicted_1,Predicted_2
+    Gera submissão no formato exigido, corrigindo a ordem das colunas
+    para: 0=STRESS, 1=AEROBIC, 2=ANAEROBIC.
     """
     print("\n--- Gerando arquivo de submissão ---")
 
-    n_classes = len(label_encoder.classes_)
-
-    # caso o modelo tenha predict_proba
+    # 1. Obter probabilidades brutas do modelo
+    # (A ordem aqui segue o label_encoder: geralmente alfabética)
     if hasattr(model, "predict_proba"):
         y_pred_proba = model.predict_proba(X_test)
     else:
-        # fallback: usar predição dura
+        # Fallback para modelos sem predict_proba (gera 0 ou 1)
         preds = model.predict(X_test)
-        y_pred_proba = np.zeros((len(preds), n_classes))
+        n_classes_model = len(label_encoder.classes_)
+        y_pred_proba = np.zeros((len(preds), n_classes_model))
         for i, p in enumerate(preds):
             y_pred_proba[i, p] = 1.0
 
-    prob_cols = [f"Predicted_{i}" for i in range(n_classes)]
+    # 2. Descobrir onde está cada classe no modelo (índices reais)
+    # O LabelEncoder geralmente ordena: 0:AEROBIC, 1:ANAEROBIC, 2:STRESS
+    classes_modelo = list(label_encoder.classes_)
+    
+    try:
+        idx_stress = classes_modelo.index("STRESS")
+        idx_aerobic = classes_modelo.index("AEROBIC")
+        idx_anaerobic = classes_modelo.index("ANAEROBIC")
+    except ValueError as e:
+        print(f"Erro Crítico: Classes esperadas não encontradas no encoder. Classes disponíveis: {classes_modelo}")
+        raise e
 
-    submission = pd.DataFrame(
-        np.column_stack([test_ids, y_pred_proba]),
-        columns=["Id"] + prob_cols
-    )
+    # 3. Montar o DataFrame mapeando para as colunas EXIGIDAS
+    # Exigência: Predict_0 = STRESS, Predict_1 = AEROBIC, Predict_2 = ANAEROBIC
+    submission = pd.DataFrame()
+    submission["Id"] = test_ids
+    
+    # Mapeamento explícito
+    submission["Predicted_0"] = y_pred_proba[:, idx_stress]    # Coluna do STRESS
+    submission["Predicted_1"] = y_pred_proba[:, idx_aerobic]   # Coluna do AEROBIC
+    submission["Predicted_2"] = y_pred_proba[:, idx_anaerobic] # Coluna do ANAEROBIC
 
-    # normalização linha a linha
-    submission[prob_cols] = submission[prob_cols].div(
-        submission[prob_cols].sum(axis=1), axis=0
-    )
+    # 4. Normalização linha a linha (Garantir soma 1.0)
+    cols_pred = ["Predicted_0", "Predicted_1", "Predicted_2"]
+    submission[cols_pred] = submission[cols_pred].div(submission[cols_pred].sum(axis=1), axis=0)
 
+    # 5. Salvar
     output_path = os.path.join(base_path, nome_arquivo)
     submission.to_csv(output_path, index=False, float_format="%.6f")
 
     print(f"\n✅ Submissão salva em: {output_path}")
-    print("\nPrévia:")
+    print("Ordem das colunas verificada: 0=STRESS, 1=AEROBIC, 2=ANAEROBIC")
     print(submission.head())
 
     return submission

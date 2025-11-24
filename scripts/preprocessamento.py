@@ -105,6 +105,7 @@ def extrair_eda_components(eda_series):
     return float(np.mean(tonic)), float(np.mean(phasic)), float(np.mean(arr)), float(np.std(arr))
 
 
+
 # -------------------------
 # ACC (x,y,z) -> magnitude, energia, entropia
 # -------------------------
@@ -148,13 +149,29 @@ def extrair_acc_features(df_acc):
 def extrair_temp_features(temp_series):
     """
     Retorna: (temp_mean, temp_std, temp_slope)
+    ATUALIZADO: Filtra valores fisicamente impossíveis (ruído de hardware) NA FONTE.
     """
     arr = _to_numeric_array(pd.Series(temp_series))
-    if len(arr) < 3:
+    
+    # --- FILTRAGEM DE RUÍDO FÍSICO ---
+    # Mantém apenas valores biologicamente possíveis (ex: 10°C a 60°C)
+    # Isso remove o pico de 200°C antes que ele suje a média.
+    # O ~ (til) inverte a lógica para remover NaNs se surgirem
+    arr_limpo = arr[(arr > 10) & (arr < 60)]
+    
+    # Se todos os dados eram ruído (array ficou vazio), retorna NaN
+    if len(arr_limpo) < 3:
         return np.nan, np.nan, np.nan
-    mean_temp = float(np.mean(arr))
-    std_temp = float(np.std(arr))
-    slope = float(np.polyfit(np.arange(len(arr)), arr, 1)[0])
+
+    mean_temp = float(np.mean(arr_limpo))
+    std_temp = float(np.std(arr_limpo))
+    
+    # Slope (tendência) calculado apenas nos dados limpos
+    try:
+        slope = float(np.polyfit(np.arange(len(arr_limpo)), arr_limpo, 1)[0])
+    except:
+        slope = 0.0
+        
     return mean_temp, std_temp, slope
 
 
@@ -164,12 +181,18 @@ def extrair_temp_features(temp_series):
 def extrair_hr_features(hr_series):
     """
     Retorna: (hr_mean, hr_std)
-    hr_series pode ser BPM por linha
+    ATUALIZADO: Filtra FC impossível (<30 ou >220).
     """
     arr = _to_numeric_array(pd.Series(hr_series))
-    if len(arr) == 0:
+    
+    # --- FILTRAGEM DE RUÍDO FÍSICO ---
+    # Remove leituras de 0 ou picos absurdos de erro do sensor
+    arr_limpo = arr[(arr >= 30) & (arr <= 220)]
+    
+    if len(arr_limpo) == 0:
         return np.nan, np.nan
-    return float(np.mean(arr)), float(np.std(arr))
+        
+    return float(np.mean(arr_limpo)), float(np.std(arr_limpo))
 
 
 # -------------------------
@@ -351,6 +374,51 @@ def tratar_valores_ausentes(df: pd.DataFrame, strategy="median"):
 
 
 # -------------------------
+# Remoção de atributos redundantes
+# -------------------------
+def remover_atributos_redundantes(df: pd.DataFrame):
+    """
+    Remove colunas que são linearmente dependentes ou redundantes baseadas na análise de correlação (Heatmap/Pairplot).
+    """
+    cols_to_drop = ['eda_tonic_mean','acc_mag_mean']
+    
+    df_out = df.drop(columns=cols_to_drop, errors='ignore')
+    
+    print(f"--- Atributos removidos: {cols_to_drop} ---")
+    return df_out
+
+
+
+# -------------------------
+# Transformação logarítmica
+# -------------------------
+def aplicar_transformacao_log(df: pd.DataFrame):
+    """
+    Aplica transformação Logarítmica (np.log1p) em atributos com distribuição altamente assimétrica.
+    
+    Isso 'normaliza' a distribuição, permitindo que o Z-Score funcione
+    corretamente para detecção de outliers e melhora o treino de modelos.
+    """
+    df_out = df.copy()
+
+    cols_to_log = [
+        'acc_energy', 
+        'acc_mag_std', 
+        'acc_entropy', 
+        'eda_mean', 
+        'eda_phasic_mean'
+    ]
+
+    print(f"--- Aplicando Log1p em: {cols_to_log} ---")
+
+    for col in cols_to_log:
+        # Aplica log(x + 1)
+        df_out[col] = np.log1p(df_out[col])
+            
+    return df_out
+
+
+# -------------------------
 # Limitar de outliers (z-score)
 # -------------------------
 def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
@@ -370,6 +438,37 @@ def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
                                df_new[col].mean() - zmax * df_new[col].std(),
                                df_new[col]))
     return df_new
+
+
+def criar_features_interacao(df: pd.DataFrame):
+    """
+    Cria novas features combinando sensores diferentes para ajudar
+    modelos lineares e árvores a separar 'Stress' de 'Exercício'.
+    """
+    df_out = df.copy()
+    
+    # Verificação de segurança: garantir que as colunas existem
+    cols = df_out.columns
+    
+    # 1. Índice de "Stress Físico" (HR vs Movimento)
+    # Adicionamos +1 no denominador para evitar divisão por zero
+    # Se o valor for ALTO: Muita batida cardíaca para pouco movimento -> STRESS
+    if 'hr_mean' in cols and 'acc_energy' in cols:
+        df_out['inter_hr_acc_ratio'] = df_out['hr_mean'] / (df_out['acc_energy'] + 1.0)
+
+    # 2. Índice de "Ativação Autonômica" (EDA vs Temperatura)
+    # Stress costuma aumentar EDA e diminuir Temperatura (vasoconstrição)
+    # Multiplicação ajuda a destacar esses extremos.
+    if 'eda_mean' in cols and 'temp_mean' in cols:
+        df_out['inter_eda_temp_mult'] = df_out['eda_mean'] * df_out['temp_mean']
+
+    # 3. Variação Combinada (HRV * EDA Std)
+    # Combina variabilidade cardíaca com picos de suor
+    if 'hrv_rmssd' in cols and 'eda_std' in cols:
+        df_out['inter_hrv_eda'] = df_out['hrv_rmssd'] * df_out['eda_std']
+
+    print("--- Features de interação criadas ---")
+    return df_out
 
 
 
