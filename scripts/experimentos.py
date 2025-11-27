@@ -27,7 +27,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
-
+from xgboost import XGBClassifier
 
 # ===================================================================
 # 1. Treinamento dos modelos (BÁSICOS / BASELINES)
@@ -110,6 +110,28 @@ def treinar_random_forest(X_train, y_train):
         random_state=42,
         n_jobs=1
     )
+    model.fit(X_train, y_train)
+    return model
+
+
+def treinar_xgboost(X_train, y_train):
+    """
+    XGBoost baseline — forte para dados tabulares.
+    """
+    print("\n--- Treinando XGBoost (baseline) ---")
+
+    model = XGBClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="multi:softprob",
+        eval_metric="mlogloss",
+        random_state=42,
+        n_jobs=-1
+    )
+
     model.fit(X_train, y_train)
     return model
 
@@ -221,6 +243,183 @@ def treinar_rf_otimizado(X_train, y_train):
     print("Melhor score RF CV:", grid.best_score_)
 
     return grid.best_estimator_
+
+
+
+def treinar_xgboost_otimizado(X_train, y_train):
+    """
+    XGBoost otimizado com search mais completo e early stopping.
+    """
+    print("\n=== Ajustando XGBoost (RandomizedSearchCV + Early Stopping) ===")
+
+    param_dist = {
+        "n_estimators": [300, 500, 800],
+        "learning_rate": [0.01, 0.03, 0.05, 0.1],
+        "max_depth": [3, 5, 7, 9],
+        "min_child_weight": [1, 3, 5, 7],
+        "gamma": [0, 0.1, 0.2, 0.3],
+        "subsample": [0.6, 0.7, 0.8, 1.0],
+        "colsample_bytree": [0.6, 0.7, 0.8, 1.0],
+        "reg_alpha": [0, 0.001, 0.01, 0.1],
+        "reg_lambda": [1, 1.5, 2, 3],
+    }
+
+    modelo_base = XGBClassifier(
+        objective="multi:softprob",
+        eval_metric="mlogloss",
+        random_state=42,
+        n_jobs=-1
+    )
+
+    random_search = RandomizedSearchCV(
+        estimator=modelo_base,
+        param_distributions=param_dist,
+        n_iter=40,                 # 40 → muito mais eficiente que grid
+        scoring="accuracy",
+        cv=5,
+        n_jobs=-1,
+        random_state=42,
+        verbose=1
+    )
+
+    random_search.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_train, y_train)],
+        early_stopping_rounds=30,
+        verbose=False
+    )
+
+    print("Melhores parâmetros:", random_search.best_params_)
+    print("Melhor score CV:", random_search.best_score_)
+
+    return random_search.best_estimator_
+
+
+
+
+
+
+
+def treinar_rf_otimizado_v2(X_train, y_train):
+    """
+    Random Forest Otimizado v2 – busca mais ampla e profunda de hiperparâmetros.
+    """
+    print("\n=== Ajustando Random Forest Otimizado v2 ===")
+
+    param_grid = {
+        "n_estimators": [100, 300],
+        "max_depth": [None, 20],
+        "min_samples_split": [2, 5],
+        "min_samples_leaf": [1, 2]
+    }
+
+    grid = GridSearchCV(
+        estimator=RandomForestClassifier(random_state=42, n_jobs=-1),
+        param_grid=param_grid,
+        cv=5,
+        scoring="accuracy",
+        n_jobs=-1,
+        verbose=1
+    )
+
+    grid.fit(X_train, y_train)
+
+    print("\nMelhores parâmetros RF v2:", grid.best_params_)
+    print("Melhor score CV:", grid.best_score_)
+
+    return grid.best_estimator_
+
+
+
+def treinar_xgboost_otimizado_v2(X_train, y_train):
+    """
+    XGBoost Otimizado v2 – pesquisa mais ampla e profunda.
+    """
+    print("\n=== Ajustando XGBoost Otimizado v2 ===")
+
+    param_grid = {
+        "n_estimators": [200, 300, 500],
+        "learning_rate": [0.01, 0.05, 0.1, 0.2],
+        "max_depth": [3, 5, 7, 9],
+        "min_child_weight": [1, 3, 5, 7],
+        "subsample": [0.6, 0.8, 1.0],
+        "colsample_bytree": [0.6, 0.8, 1.0],
+        "gamma": [0, 0.1, 0.3],
+        "reg_alpha": [0, 0.1, 1],
+        "reg_lambda": [0.5, 1, 2, 3]
+    }
+
+    modelo = XGBClassifier(
+        objective="multi:softprob",
+        eval_metric="mlogloss",
+        n_jobs=-1,
+        random_state=42,
+        tree_method="auto"
+    )
+
+    grid = GridSearchCV(
+        estimator=modelo,
+        param_grid=param_grid,
+        cv=5,
+        scoring="accuracy",
+        n_jobs=-1,
+        verbose=1
+    )
+
+    grid.fit(X_train, y_train)
+
+    print("\nMelhores parâmetros XGB v2:", grid.best_params_)
+    print("Melhor score CV:", grid.best_score_)
+
+    return grid.best_estimator_
+
+
+from sklearn.ensemble import VotingClassifier
+
+def treinar_ensemble_votacao(model_rf, model_xgb, X_train, y_train):
+    """
+    Ensemble por votação suave (soft voting) combinando RF + XGBoost.
+    """
+    print("\n=== Treinando Ensemble (Voting RF + XGBoost) ===")
+
+    ensemble = VotingClassifier(
+        estimators=[
+            ('rf', model_rf),
+            ('xgb', model_xgb)
+        ],
+        voting='soft',  # usa probabilidades → melhor desempenho
+        n_jobs=-1
+    )
+
+    ensemble.fit(X_train, y_train)
+    return ensemble
+
+
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
+
+def treinar_ensemble_stacking(model_rf, model_xgb, X_train, y_train):
+    """
+    Ensemble por stacking: RF + XGB → meta-modelo (Regressão Logística)
+    """
+    print("\n=== Treinando Ensemble (Stacking RF + XGBoost) ===")
+
+    meta_model = LogisticRegression(max_iter=1000)
+
+    stacking = StackingClassifier(
+        estimators=[
+            ('rf', model_rf),
+            ('xgb', model_xgb)
+        ],
+        final_estimator=meta_model,
+        stack_method="predict_proba",
+        passthrough=False,
+        n_jobs=-1
+    )
+
+    stacking.fit(X_train, y_train)
+    return stacking
 
 
 
