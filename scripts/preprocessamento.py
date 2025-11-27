@@ -440,32 +440,47 @@ def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
     return df_new
 
 
+# -------------------------
+# Criação de features de interação
+# -------------------------
 def criar_features_interacao(df: pd.DataFrame):
     """
     Cria novas features combinando sensores diferentes para ajudar
-    modelos lineares e árvores a separar 'Stress' de 'Exercício'.
+    modelos lineares e árvores a distinguir 'Stress' de 'Exercício'.
     """
     df_out = df.copy()
-    
-    # Verificação de segurança: garantir que as colunas existem
     cols = df_out.columns
-    
-    # 1. Índice de "Stress Físico" (HR vs Movimento)
-    # Adicionamos +1 no denominador para evitar divisão por zero
-    # Se o valor for ALTO: Muita batida cardíaca para pouco movimento -> STRESS
-    if 'hr_mean' in cols and 'acc_energy' in cols:
-        df_out['inter_hr_acc_ratio'] = df_out['hr_mean'] / (df_out['acc_energy'] + 1.0)
 
-    # 2. Índice de "Ativação Autonômica" (EDA vs Temperatura)
-    # Stress costuma aumentar EDA e diminuir Temperatura (vasoconstrição)
-    # Multiplicação ajuda a destacar esses extremos.
-    if 'eda_mean' in cols and 'temp_mean' in cols:
-        df_out['inter_eda_temp_mult'] = df_out['eda_mean'] * df_out['temp_mean']
+    # 1) Índice de Stress Físico (HR / ACC)
+        # Ideia: Relaciona o esforço cardíaco ao nível de movimento.
+        # Stress: frequência cardíaca alta com pouco movimento.
+        # Exercício: frequência cardíaca e movimento aumentam juntos.
+        # Somamos +1 ao ACC para evitar divisão por zero.
+    if "hr_mean" in cols and "acc_energy" in cols:
+        df_out["inter_hr_acc_ratio"] = df_out["hr_mean"] / (df_out["acc_energy"] + 1.0)
 
-    # 3. Variação Combinada (HRV * EDA Std)
-    # Combina variabilidade cardíaca com picos de suor
-    if 'hrv_rmssd' in cols and 'eda_std' in cols:
-        df_out['inter_hrv_eda'] = df_out['hrv_rmssd'] * df_out['eda_std']
+    # 2) Movimento × Resposta Térmica (ACC × Temp Slope)
+        # Ideia: Avalia como o movimento corporal afeta a mudança da temperatura.
+        # Stress: pouco movimento com queda de temperatura periférica.
+        # Exercício: muito movimento com aumento gradual de temperatura.
+        # A interação mostra diferenças entre esforço físico e ativação emocional.
+    if "acc_energy" in cols and "temp_slope" in cols:
+        df_out["inter_acc_temp"] = df_out["acc_energy"] * df_out["temp_slope"]
+
+    # 3) Ativação Autonômica (EDA × Temperatura)
+        # Ideia: Relaciona suor (EDA) a mudanças de temperatura corporal.
+        # Stress: EDA elevada com redução de temperatura --> padrões típicos de ativação simpática.
+        # Exercício: temperatura tende a aumentar e EDA a crescer de forma moderada.
+    if "eda_mean" in cols and "temp_mean" in cols:
+        df_out["inter_eda_temp_mult"] = df_out["eda_mean"] * df_out["temp_mean"]
+
+    # 4) Reatividade Fisiológica Combinada (HRV × EDA std)
+        # Ideia: Combina variabilidade cardíaca com oscilações de suor.
+        # Stress: baixa variabilidade cardíaca com grande oscilação de EDA.
+        # Exercício: HRV tende a permanecer mais alta e EDA apresenta flutuações menores.
+    if "hrv_rmssd" in cols and "eda_std" in cols:
+        df_out["inter_hrv_eda"] = df_out["hrv_rmssd"] * df_out["eda_std"]
+
 
     print("--- Features de interação criadas ---")
     return df_out
