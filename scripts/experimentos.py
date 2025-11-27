@@ -223,10 +223,10 @@ def treinar_rf_otimizado(X_train, y_train):
 
     param_grid = {
         'n_estimators': [50, 100, 200],
-        'max_depth': [None, 10, 20],
+        'max_depth': [None, 5, 10, 15],
         'criterion': ['gini', 'entropy'],
-        'min_samples_split': [2, 5],
-        'min_samples_leaf': [1, 2, 4],
+        'min_samples_split': [5, 10, 15],
+        'min_samples_leaf': [2, 4, 6],
     }
 
     grid = GridSearchCV(
@@ -252,11 +252,11 @@ def treinar_xgboost_otimizado(X_train, y_train):
     print("\n=== Ajustando XGBoost (RandomizedSearchCV + Early Stopping) ===")
 
     param_dist = {
-        "n_estimators": [300, 500, 800],
+        "n_estimators": [50, 100, 200],
         "learning_rate": [0.01, 0.03, 0.05, 0.1],
-        "max_depth": [3, 5, 7, 9],
-        "min_child_weight": [1, 3, 5, 7],
-        "gamma": [0, 0.1, 0.2, 0.3],
+        "max_depth": [2, 3, 4, 5],
+        "min_child_weight": [3, 5, 7],
+        "gamma": [0, 0.1, 0.5, 1],
         "subsample": [0.6, 0.7, 0.8, 1.0],
         "colsample_bytree": [0.6, 0.7, 0.8, 1.0],
         "reg_alpha": [0, 0.001, 0.01, 0.1],
@@ -281,13 +281,7 @@ def treinar_xgboost_otimizado(X_train, y_train):
         verbose=1
     )
 
-    random_search.fit(
-        X_train,
-        y_train,
-        eval_set=[(X_train, y_train)],
-        early_stopping_rounds=30,
-        verbose=False
-    )
+    random_search.fit(X_train, y_train)
 
     print("Melhores parâmetros:", random_search.best_params_)
     print("Melhor score CV:", random_search.best_score_)
