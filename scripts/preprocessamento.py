@@ -477,19 +477,18 @@ def criar_features_interacao(df: pd.DataFrame):
 # -------------------------
 def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
     """
-    Recebe dataframes gerados por gerar_dataset().
-    Executa:
-      - Encode da classe (LabelEncoder)
-      - Seleção/ordenacao de colunas (Id removido)
-      - Normalização (StandardScaler) ajustado no treino
-      - Retorna X_train, y_train, X_test, test_ids, label_encoder, scaler
+    Prepara dados garantindo alinhamento entre treino e teste,
+    mesmo após criação/remoção de features.
     """
-    from sklearn.preprocessing import LabelEncoder
+
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
 
     df_train = df_train.copy()
     df_test = df_test.copy()
 
-    # label encode (se 'classe' existir)
+    # ==========================================================
+    # 1) Label Encoding da classe
+    # ==========================================================
     if "classe" in df_train.columns:
         le = LabelEncoder()
         y_train = le.fit_transform(df_train["classe"].astype(str))
@@ -497,22 +496,48 @@ def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
         le = None
         y_train = None
 
-    # Remover Id/Classe das features
+    # ==========================================================
+    # 2) Remover Id e classe
+    # ==========================================================
     X_train = df_train.drop(columns=["Id", "classe"], errors="ignore").copy()
     X_test = df_test.drop(columns=["Id", "classe"], errors="ignore").copy()
     test_ids = df_test["Id"].copy() if "Id" in df_test.columns else None
 
-    # Tratar valores ausentes antes do scale (usar mediana do treino)
+    # ==========================================================
+    # 3) Tratar valores ausentes antes do alinhamento
+    # ==========================================================
     X_train = tratar_valores_ausentes(X_train)
     X_test = tratar_valores_ausentes(X_test)
 
-    # Padronizar numéricas
-    scaler = StandardScaler()
-    X_train_vals = scaler.fit_transform(X_train.select_dtypes(include=[np.number]))
-    X_test_vals = scaler.transform(X_test.select_dtypes(include=[np.number]))
+    # ==========================================================
+    # 4) ALINHAR COLUNAS ENTRE TREINO E TESTE
+    # ==========================================================
 
-    # Reconstruir DataFrames padronizados com mesmas colunas
-    X_train_scaled = pd.DataFrame(X_train_vals, columns=X_train.select_dtypes(include=[np.number]).columns, index=X_train.index)
-    X_test_scaled = pd.DataFrame(X_test_vals, columns=X_train_scaled.columns, index=X_test.index)
+    colunas_treino = X_train.columns
+
+    # Adicionar no teste colunas que só existem no treino
+    for col in colunas_treino:
+        if col not in X_test.columns:
+            X_test[col] = 0   # ou mediana: X_train[col].median()
+
+    # Remover do teste colunas que não existem no treino
+    for col in X_test.columns:
+        if col not in colunas_treino:
+            X_test = X_test.drop(columns=[col])
+
+    # Reordenar o teste
+    X_test = X_test[colunas_treino]
+
+    # ==========================================================
+    # 5) Normalizar numéricas com StandardScaler
+    # ==========================================================
+    scaler = StandardScaler()
+
+    X_train_vals = scaler.fit_transform(X_train)
+    X_test_vals = scaler.transform(X_test)
+
+    # Reconstruir DataFrames padronizados
+    X_train_scaled = pd.DataFrame(X_train_vals, columns=colunas_treino, index=X_train.index)
+    X_test_scaled = pd.DataFrame(X_test_vals,  columns=colunas_treino, index=X_test.index)
 
     return X_train_scaled, y_train, X_test_scaled, test_ids, le, scaler
