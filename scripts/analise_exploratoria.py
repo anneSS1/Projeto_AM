@@ -45,14 +45,14 @@ def carregar_e_resumir(base_path: str) -> pd.DataFrame:
     print("\n--- Carregando dataset ---")
     df = gerar_dataset(base_path)
 
-    print("\n✅ Primeiras linhas do dataset:")
+    print("\nPrimeiras linhas do dataset:")
     exibir(df.head())
 
-    print("\n📊 Informações gerais:")
+    print("\nInformações gerais:")
     df_info = df.info()          # info imprime sozinho
     print(df_info)
 
-    print("\n📈 Estatísticas descritivas:")
+    print("\nEstatísticas descritivas:")
     exibir(df.describe(include="all"))
 
     return df
@@ -66,75 +66,134 @@ def medidas_descritivas(df: pd.DataFrame):
     print("\n--- Medidas Descritivas ---")
 
     if "classe" in df.columns:
-        print("\n📦 Distribuição das classes:")
+        print("\nDistribuição das classes:")
         exibir(df["classe"].value_counts())
 
         plt.figure(figsize=(6, 4))
-        sns.countplot(x="classe", data=df, palette="Set2")
+        # Correção do FutureWarning do Seaborn:
+        #   Antes: sns.countplot(x="classe", data=df, palette="Set2")
+        #   Seaborn mostrou warning dizendo que `palette` só deve ser usado quando houver `hue`, pois a paleta não é aplicada corretamente
+        #   Solução: definir hue="classe"
+        ax = sns.countplot(x="classe", data=df, hue="classe", palette="Set2")
+        ax.get_legend().remove()  # Remove legenda duplicada
         plt.title("Distribuição das Classes")
         plt.show()
     else:
-        print("⚠️ Coluna 'classe' não encontrada no dataset.")
+        print("Coluna 'classe' não encontrada no dataset.")
 
-    print("\n🚨 Valores ausentes por coluna:")
+    print("\nValores ausentes por coluna:")
     exibir(df.isnull().sum())
 
 
 # ================================================================
 # 3. Boxplots e Histogramas
 # ================================================================
-def boxplots_e_histogramas(df: pd.DataFrame, max_cols=6):
+def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
     """
-    Gera boxplots e histogramas para atributos numéricos (versão robusta sem KDE).
+    Gera boxplots e histogramas apenas para os atributos numéricos
+    mais informativos, com gráficos organizados em grade.
+    
+    Critérios de seleção:
+    - Top N atributos com maior variância
+    - Top N atributos mais relevantes para a classe (ANOVA F-score)
+    - Top N atributos com maior correlação absoluta entre si
+    
+    Isso evita gerar dezenas de gráficos irrelevantes e torna a EDA mais objetiva.
     """
-    print("\n--- Boxplots e Histogramas ---")
+    print("\n--- Boxplots e Histogramas (seleção inteligente) ---")
 
-    # Selecionar apenas colunas numéricas
-    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    # ============================
+    # 1. Selecionar atributos numéricos
+    # ============================
+    num_df = df.select_dtypes(include=np.number)
 
-    if len(num_cols) == 0:
-        print("⚠️ Nenhuma coluna numérica encontrada para visualização.")
+    if num_df.empty:
+        print("⚠️ Nenhuma coluna numérica encontrada.")
         return
 
-    num_cols = num_cols[:max_cols]
+    # ============================
+    # 2. Ranking por variância
+    # ============================
+    variancias = num_df.var().sort_values(ascending=False)
+    top_var = variancias.head(top_n).index.tolist()
 
-    # Boxplot geral
-    plt.figure(figsize=(14, 6))
-    sns.boxplot(data=df[num_cols], orient="h")
-    plt.title("Boxplot Geral dos Atributos Numéricos")
+    # ============================
+    # 3. Ranking por relevância com a classe (ANOVA)
+    # ============================
+    top_fscore = []
+    if "classe" in df.columns:
+        try:
+            from sklearn.feature_selection import f_classif
+            f_vals, _ = f_classif(num_df, df["classe"])
+            f_scores = pd.Series(f_vals, index=num_df.columns)
+            top_fscore = f_scores.sort_values(ascending=False).head(top_n).index.tolist()
+        except:
+            pass
+
+    # ============================
+    # 4. Ranking por correlação
+    # ============================
+    corr_matrix = num_df.corr()
+    corr_pairs = corr_matrix.abs().unstack()
+    corr_pairs = corr_pairs[corr_pairs < 1]           # tira diagonais
+    corr_pairs = corr_pairs.sort_values(ascending=False)
+    top_corr = list(dict.fromkeys([a for a, b in corr_pairs.index[:top_n]]))
+
+    # ============================
+    # 5. Seleção final dos atributos mais importantes
+    # ============================
+    atributos_escolhidos = list(dict.fromkeys(top_var + top_fscore + top_corr))
+    atributos_escolhidos = atributos_escolhidos[:top_n]  # limitar ao desejado
+
+    print(f"\n🧠 Atributos selecionados para visualização: {atributos_escolhidos}")
+
+    # -------------------------------------------------------------------------
+    # BOX-PLOTS (em grid 2 × N/2)
+    # -------------------------------------------------------------------------
+    n_cols = 2
+    n_rows = int(np.ceil(len(atributos_escolhidos) / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4 * n_rows))
+    axes = axes.flatten()
+
+    for ax, col in zip(axes, atributos_escolhidos):
+        sns.boxplot(x=df[col], ax=ax, color="skyblue")
+        ax.set_title(f"Boxplot – {col}")
+
+    # Apagar subplots vazios
+    for i in range(len(atributos_escolhidos), len(axes)):
+        fig.delaxes(axes[i])
+
+    plt.tight_layout()
     plt.show()
 
-    # Boxplot por classe
-    if "classe" in df.columns:
-        for col in num_cols:
-            if df[col].nunique() < 2:
-                continue
-            plt.figure(figsize=(6, 4))
-            sns.boxplot(x="classe", y=col, data=df, palette="Spectral")
-            plt.title(f"Boxplot – {col} por Classe")
-            plt.show()
+    # -------------------------------------------------------------------------
+    # HISTOGRAMAS (em grid)
+    # -------------------------------------------------------------------------
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4 * n_rows))
+    axes = axes.flatten()
 
-    # Histogramas 
-    for col in num_cols[:5]:
-        if df[col].nunique() < 2:
-            print(f"⚠️ Coluna {col} ignorada (variância zero).")
-            continue
-
-        plt.figure(figsize=(6,4))
+    for ax, col in zip(axes, atributos_escolhidos):
 
         if "classe" in df.columns:
-            # Plot separado por classe
+            # Histograma por classe
             for classe in df["classe"].unique():
                 subset = df[df["classe"] == classe][col]
-                plt.hist(subset, bins=30, alpha=0.5, label=str(classe))
-            plt.legend()
+                ax.hist(subset, bins=25, alpha=0.5, label=str(classe))
+            ax.legend()
         else:
-            plt.hist(df[col], bins=30)
+            ax.hist(df[col], bins=25, alpha=0.7)
 
-        plt.title(f"Histograma de {col}")
-        plt.xlabel(col)
-        plt.ylabel("Frequência")
-        plt.show()
+        ax.set_title(f"Histograma – {col}")
+        ax.set_xlabel(col)
+        ax.set_ylabel("Frequência")
+
+    # Apagar subplots vazios
+    for i in range(len(atributos_escolhidos), len(axes)):
+        fig.delaxes(axes[i])
+
+    plt.tight_layout()
+    plt.show()
 
 
 
@@ -170,27 +229,56 @@ def correlacao_atributos(df: pd.DataFrame):
 # ================================================================
 # 5. Pairplot com amostra
 # ================================================================
-def pairplot_amostrado(df: pd.DataFrame, n_amostras=300, n_features=5):
+def pairplot_amostrado(df: pd.DataFrame, n_amostras=300):
     """
-    Gera pairplot com amostra reduzida.
-    Evita travamentos em datasets grandes.
+    Gera pairplot com amostra reduzida, selecionando automaticamente
+    os atributos mais relevantes para motivar as features de interação.
     """
-    print("\n--- Pairplot Amostrado ---")
 
-    num_cols = df.select_dtypes(include=np.number).columns[:n_features].tolist()
+    print("\n--- Pairplot Amostrado (focado em interações fisiológicas) ---")
 
+    # Lista final de atributos relevantes para justificar interações
+    atributos_relevantes = []
+
+    # 1) HR / ACC → índice de esforço cardíaco relativo ao movimento
+    if "hr_mean" in df.columns and "acc_energy" in df.columns:
+        atributos_relevantes += ["hr_mean", "acc_energy"]
+
+    # 2) ACC × Temp Slope → movimento vs. resposta térmica periférica
+    if "acc_energy" in df.columns and "temp_slope" in df.columns:
+        atributos_relevantes += ["acc_energy", "temp_slope"]
+
+    # 3) EDA × Temp Mean → ativação autonômica (suor + temperatura)
+    if "eda_mean" in df.columns and "temp_mean" in df.columns:
+        atributos_relevantes += ["eda_mean", "temp_mean"]
+
+    # 4) HRV × EDA std → reatividade simpática
+    if "hrv_rmssd" in df.columns and "eda_std" in df.columns:
+        atributos_relevantes += ["hrv_rmssd", "eda_std"]
+
+    # Remove duplicatas mantendo a ordem
+    atributos_relevantes = list(dict.fromkeys(atributos_relevantes))
+
+    if len(atributos_relevantes) == 0:
+        print("Nenhum dos atributos necessários para interações foi encontrado.")
+        return
+
+    # Adiciona a classe se existir
     if "classe" in df.columns:
-        cols = num_cols + ["classe"]
+        cols = atributos_relevantes + ["classe"]
     else:
-        cols = num_cols
+        cols = atributos_relevantes
 
-    # Amostra segura
+    # Amostragem segura
     sample = df.sample(n=min(n_amostras, len(df)), random_state=42)
+    print(f"Gerando pairplot com {len(sample)} amostras e {len(atributos_relevantes)} atributos...")
 
-    print(f"Gerando pairplot com {len(sample)} amostras e {len(num_cols)} atributos...")
-
-    sns.pairplot(sample[cols], hue="classe" if "classe" in df.columns else None,
-                 height=2.0, diag_kind="kde")
+    sns.pairplot(
+        sample[cols],
+        hue="classe" if "classe" in df.columns else None,
+        height=2.0,
+        diag_kind="kde"
+    )
     plt.show()
 
 
