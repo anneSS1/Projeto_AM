@@ -287,27 +287,85 @@ def pairplot_amostrado(df: pd.DataFrame, n_amostras=300):
 # 6. Análise de séries temporais
 # ################################################################
 def plot_series_temporais(df, colunas):
-    print("\n--- Séries Temporais ---")
+    """
+    Plota as séries temporais em um layout de subplots.
+    """
+    print("\n--- Séries Temporais (Subplots) ---")
+    
+    # Filtra colunas que realmente existem
+    cols_validas = [col for col in colunas if col in df.columns]
+    if not cols_validas:
+        print("⚠️ Nenhuma das colunas especificadas foi encontrada.")
+        return
 
-    for col in colunas:
-        if col not in df.columns:
-            print(f"⚠️ Coluna {col} não encontrada.")
-            continue
+    # Define o layout: número de colunas fixo (2) e calcula as linhas
+    ncols = 2
+    nrows = int(np.ceil(len(cols_validas) / ncols))
+    
+    # Define o tamanho total da figura
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 4 * nrows))
+    
+    # Transforma 'axes' em um array 1D para facilitar a iteração
+    axes = axes.flatten() if nrows > 1 else [axes]
+
+    for i, col in enumerate(cols_validas):
+        # Plota no subplot atual
+        axes[i].plot(df[col].values)
+        axes[i].set_title(f"{col}", fontsize=12)
+        axes[i].set_xlabel("Tempo (amostra)")
+        axes[i].ticklabel_format(style='sci', axis='y', scilimits=(0, 0)) # Formata para notação científica, se necessário
+    
+    # Remove subplots vazios, se houver
+    for j in range(len(cols_validas), len(axes)):
+        fig.delaxes(axes[j])
         
-        plt.figure(figsize=(12,4))
-        plt.plot(df[col].values)
-        plt.title(f"Série Temporal – {col}")
-        plt.xlabel("Tempo (amostra)")
-        plt.ylabel(col)
-        plt.tight_layout()
-        plt.show()
+    plt.suptitle("Séries Temporais dos Atributos Fisiológicos", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96]) # Ajusta o layout para dar espaço ao suptitle
+    plt.show()
 
 
 ################################################################
 # 7. Scatter plot duplo
 ################################################################
-def scatter_duplo(df, x, y):
-    plt.figure(figsize=(6,4))
-    sns.scatterplot(data=df, x=x, y=y, hue="classe", alpha=0.6)
-    plt.title(f"{x} vs {y}")
+def scatter_duplo(df: pd.DataFrame, lista_pares: list):
+    """
+    Gera scatter plots de pares de atributos em um layout de subplots.
+    """
+    print("\n--- Scatter Plots Duplos (Subplots) ---")
+    
+    n_graficos = len(lista_pares)
+    ncols = 3  # 3 colunas por linha
+    nrows = int(np.ceil(n_graficos / ncols))
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 5 * nrows))
+    
+    # Transforma 'axes' em um array 1D para fácil iteração
+    axes = axes.flatten() if nrows > 1 else [axes]
+    
+    # Verifica a existência da coluna 'classe' para o hue
+    use_hue = "classe" if "classe" in df.columns else None
+
+    for i, (x, y) in enumerate(lista_pares):
+        if x not in df.columns or y not in df.columns:
+            print(f"⚠️ Pares {x} ou {y} não encontrados.")
+            continue
+            
+        sns.scatterplot(
+            data=df, 
+            x=x, 
+            y=y, 
+            hue=use_hue, 
+            ax=axes[i], 
+            alpha=0.6,
+            palette="viridis" if use_hue else None # Exemplo de paleta
+        )
+        axes[i].set_title(f"{x} vs {y}", fontsize=12)
+        axes[i].legend(title="Classe")
+    
+    # Remove subplots vazios, se houver
+    for j in range(n_graficos, len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.suptitle("Scatter Plots de Pares Fisiológicos (Motivação para Interação)", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
