@@ -27,9 +27,9 @@ from scipy.fft import fft
 from collections import Counter
 
 
-# -------------------------
+# ===================================================================
 # Utilitários
-# -------------------------
+# ===================================================================
 def _safe_read_csv(path, header=None):
     """Lê csv sem assumir cabeçalho; retorna DataFrame com todas as colunas brutas."""
     try:
@@ -54,9 +54,9 @@ def _shannon_entropy(arr, bins=30):
     return -np.sum(hist * np.log2(hist))
 
 
-# -------------------------
+# ===================================================================
 # HRV (IBI)
-# -------------------------
+# ===================================================================
 def extrair_hrv(df_ibi):
     """
     Recebe df_ibi (DataFrame do IBI.csv).
@@ -77,9 +77,9 @@ def extrair_hrv(df_ibi):
     return rmssd, sdnn
 
 
-# -------------------------
+# ===================================================================
 # EDA (tonic / phasic simplificado)
-# -------------------------
+# ===================================================================
 def extrair_eda_components(eda_series):
     """
     Extrai componentes tonic (passa-baixa) e phasic (resáduo).
@@ -106,9 +106,9 @@ def extrair_eda_components(eda_series):
 
 
 
-# -------------------------
+# ===================================================================
 # ACC (x,y,z) -> magnitude, energia, entropia
-# -------------------------
+# ===================================================================
 def extrair_acc_features(df_acc):
     """
     Recebe df_acc (DataFrame). Espera três colunas numéricas (x,y,z) possivelmente sem cabeçalho.
@@ -143,30 +143,26 @@ def extrair_acc_features(df_acc):
     return mag_mean, mag_std, energy, entropy
 
 
-# -------------------------
+# ===================================================================
 # TEMP features
-# -------------------------
+# ===================================================================
 def extrair_temp_features(temp_series):
     """
-    Retorna: (temp_mean, temp_std, temp_slope)
-    ATUALIZADO: Filtra valores fisicamente impossíveis (ruído de hardware) NA FONTE.
+    Retorna temp_mean, temp_std, temp_slope
     """
     arr = _to_numeric_array(pd.Series(temp_series))
     
-    # --- FILTRAGEM DE RUÍDO FÍSICO ---
-    # Mantém apenas valores biologicamente possíveis (ex: 10°C a 60°C)
-    # Isso remove o pico de 200°C antes que ele suje a média.
-    # O ~ (til) inverte a lógica para remover NaNs se surgirem
+    # filtra ruído físico
     arr_limpo = arr[(arr > 10) & (arr < 60)]
     
-    # Se todos os dados eram ruído (array ficou vazio), retorna NaN
+    # retorna nan se todos os dados eram ruído
     if len(arr_limpo) < 3:
         return np.nan, np.nan, np.nan
 
     mean_temp = float(np.mean(arr_limpo))
     std_temp = float(np.std(arr_limpo))
     
-    # Slope (tendência) calculado apenas nos dados limpos
+    # calculo slope
     try:
         slope = float(np.polyfit(np.arange(len(arr_limpo)), arr_limpo, 1)[0])
     except:
@@ -175,18 +171,16 @@ def extrair_temp_features(temp_series):
     return mean_temp, std_temp, slope
 
 
-# -------------------------
+# ===================================================================
 # HR features (quando HR.csv estiver presente)
-# -------------------------
+# ===================================================================
 def extrair_hr_features(hr_series):
     """
-    Retorna: (hr_mean, hr_std)
-    ATUALIZADO: Filtra FC impossível (<30 ou >220).
+    Retorna hr_mean, hr_std
     """
     arr = _to_numeric_array(pd.Series(hr_series))
     
-    # --- FILTRAGEM DE RUÍDO FÍSICO ---
-    # Remove leituras de 0 ou picos absurdos de erro do sensor
+    # filtra ruído físico
     arr_limpo = arr[(arr >= 30) & (arr <= 220)]
     
     if len(arr_limpo) == 0:
@@ -195,9 +189,9 @@ def extrair_hr_features(hr_series):
     return float(np.mean(arr_limpo)), float(np.std(arr_limpo))
 
 
-# -------------------------
-# Função auxiliar: extrai estatísticas simples (compatibilidade)
-# -------------------------
+# ===================================================================
+# # Função auxiliar: extrai estatísticas simples (compatibilidade)
+# ===================================================================
 def estatisticas_basicas_numeric(df):
     """
     Recebe dataframe com colunas numéricas e retorna mean/std para cada coluna
@@ -212,9 +206,9 @@ def estatisticas_basicas_numeric(df):
     return res
 
 
-# -------------------------
+# ===================================================================-
 # Geração consolidada do dataset (treino/teste)
-# -------------------------
+# ===================================================================-
 def gerar_dataset(base_path: str, mode="train"):
     """
     Gera dataset consolidado (treino ou teste) a partir da pasta base.
@@ -328,17 +322,11 @@ def gerar_dataset(base_path: str, mode="train"):
             except Exception:
                 user_data["bvp_mean"] = np.nan
 
-        # manter algumas estatísticas básicas para compatibilidade (mean/std)
-        # isto permite compatibilidade com experiments que esperam cols "<sensor>_mean"
-        # (será usado posteriormente para alinhar colunas treino/teste)
-        # NOTE: estatisticas_basicas_numeric pode retornar many cols; mantemos apenas se existirem
-        # (não adicionamos max/min para evitar redundância)
-        # Nenhuma exceção aqui — funções acima já populam os campos principais
 
         data_rows.append(user_data)
 
     df_features = pd.DataFrame(data_rows)
-    # Organizar colunas (Id, classe se existir, e features ordenadas)
+    # organizar colunas (Id, classe se existir, e features ordenadas)
     cols = ["Id"]
     if "classe" in df_features.columns:
         cols.append("classe")
@@ -350,36 +338,47 @@ def gerar_dataset(base_path: str, mode="train"):
     return df_features
 
 
-# -------------------------
+# ===================================================================
 # Tratamento de valores ausentes (simples e robusto)
-# -------------------------
+# ===================================================================
 def tratar_valores_ausentes(df: pd.DataFrame, strategy="median"):
     """
-    strategy: 'median' (numéricas) e moda (categóricas) — padrão
-    Retorna DF com valores preenchidos (cópia).
+    strategy: 'median' (numéricas) e moda (categóricas)
+    Retorna DF com valores preenchidos.
     """
     out = df.copy()
-    out.replace("?", np.nan, inplace=True)
-
+    
+    out = out.replace("?", np.nan)
+    
     for col in out.columns:
-        if out[col].dtype in [np.float64, np.int64, float, int]:
+        try:
+            out[col] = pd.to_numeric(out[col])
+        except (ValueError, TypeError):
+            pass
+        if pd.api.types.is_numeric_dtype(out[col]):
             if strategy == "median":
-                out[col].fillna(out[col].median(), inplace=True)
+                valor = out[col].median()
             else:
-                out[col].fillna(out[col].mean(), inplace=True)
+                valor = out[col].mean()
+            
+            out[col] = out[col].fillna(valor)
+            
         else:
             moda = out[col].mode()
-            out[col].fillna(moda[0] if not moda.empty else "Desconhecido", inplace=True)
+            valor = moda[0] if not moda.empty else "Desconhecido"
+            
+            out[col] = out[col].fillna(valor)
     return out
 
 
-# -------------------------
+# ===================================================================
 # Remoção de atributos redundantes
-# -------------------------
+# ===================================================================
 def remover_atributos_redundantes(df: pd.DataFrame):
     """
     Remove colunas que são linearmente dependentes ou redundantes baseadas na análise de correlação (Heatmap/Pairplot).
     """
+
     cols_to_drop = ['eda_tonic_mean','acc_mag_mean']
     
     df_out = df.drop(columns=cols_to_drop, errors='ignore')
@@ -389,15 +388,14 @@ def remover_atributos_redundantes(df: pd.DataFrame):
 
 
 
-# -------------------------
+# ===================================================================
 # Transformação logarítmica
-# -------------------------
+# ===================================================================
 def aplicar_transformacao_log(df: pd.DataFrame):
     """
     Aplica transformação Logarítmica (np.log1p) em atributos com distribuição altamente assimétrica.
     
-    Isso 'normaliza' a distribuição, permitindo que o Z-Score funcione
-    corretamente para detecção de outliers e melhora o treino de modelos.
+    Isso 'normaliza' a distribuição, permitindo que o Z-Score funcione corretamente para detecção de outliers e melhora o treino de modelos.
     """
     df_out = df.copy()
 
@@ -412,37 +410,32 @@ def aplicar_transformacao_log(df: pd.DataFrame):
     print(f"--- Aplicando Log1p em: {cols_to_log} ---")
 
     for col in cols_to_log:
-        # Aplica log(x + 1)
+        # aplica log(x + 1)
         df_out[col] = np.log1p(df_out[col])
             
     return df_out
 
 
-# -------------------------
+# ===================================================================
 # Limitar de outliers (z-score)
-# -------------------------
+# ===================================================================
 def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
     """
-    Limita valores extremos (capping) usando Z-score por coluna,
-    sem remover linhas.
-    É a abordagem mais segura para sinais fisiológicos.
+    Limita valores extremos (capping) usando Z-score por coluna, sem remover linhas.
     """
+
     df_new = df.copy()
     num = df_new.select_dtypes(include=[np.number])
 
     for col in num.columns:
         col_z = (df_new[col] - df_new[col].mean()) / df_new[col].std()
-        df_new[col] = np.where(col_z > zmax,
-                               df_new[col].mean() + zmax * df_new[col].std(),
-                       np.where(col_z < -zmax,
-                               df_new[col].mean() - zmax * df_new[col].std(),
-                               df_new[col]))
+        df_new[col] = np.where(col_z > zmax, df_new[col].mean() + zmax * df_new[col].std(), np.where(col_z < -zmax, df_new[col].mean() - zmax * df_new[col].std(), df_new[col]))
     return df_new
 
 
-# -------------------------
+# ===================================================================
 # Criação de features de interação
-# -------------------------
+# ===================================================================
 def criar_features_interacao(df: pd.DataFrame):
     """
     Cria novas features combinando sensores diferentes para ajudar
@@ -451,33 +444,19 @@ def criar_features_interacao(df: pd.DataFrame):
     df_out = df.copy()
     cols = df_out.columns
 
-    # 1) Índice de Stress Físico (HR / ACC)
-        # Ideia: Relaciona o esforço cardíaco ao nível de movimento.
-        # Stress: frequência cardíaca alta com pouco movimento.
-        # Exercício: frequência cardíaca e movimento aumentam juntos.
-        # Somamos +1 ao ACC para evitar divisão por zero.
+    # índice de stress físico (HR / ACC)
     if "hr_mean" in cols and "acc_energy" in cols:
         df_out["inter_hr_acc_ratio"] = df_out["hr_mean"] / (df_out["acc_energy"] + 1.0)
 
-    # 2) Movimento × Resposta Térmica (ACC × Temp Slope)
-        # Ideia: Avalia como o movimento corporal afeta a mudança da temperatura.
-        # Stress: pouco movimento com queda de temperatura periférica.
-        # Exercício: muito movimento com aumento gradual de temperatura.
-        # A interação mostra diferenças entre esforço físico e ativação emocional.
+    # movimento × resposta térmica (ACC × Temp Slope)
     if "acc_energy" in cols and "temp_slope" in cols:
         df_out["inter_acc_temp"] = df_out["acc_energy"] * df_out["temp_slope"]
 
-    # 3) Ativação Autonômica (EDA × Temperatura)
-        # Ideia: Relaciona suor (EDA) a mudanças de temperatura corporal.
-        # Stress: EDA elevada com redução de temperatura --> padrões típicos de ativação simpática.
-        # Exercício: temperatura tende a aumentar e EDA a crescer de forma moderada.
+    # ativação autonômica (EDA × Temperatura)
     if "eda_mean" in cols and "temp_mean" in cols:
         df_out["inter_eda_temp_mult"] = df_out["eda_mean"] * df_out["temp_mean"]
 
-    # 4) Reatividade Fisiológica Combinada (HRV × EDA std)
-        # Ideia: Combina variabilidade cardíaca com oscilações de suor.
-        # Stress: baixa variabilidade cardíaca com grande oscilação de EDA.
-        # Exercício: HRV tende a permanecer mais alta e EDA apresenta flutuações menores.
+    # reatividade fisiológica combinada (HRV × EDA std)
     if "hrv_rmssd" in cols and "eda_std" in cols:
         df_out["inter_hrv_eda"] = df_out["hrv_rmssd"] * df_out["eda_std"]
 
@@ -487,9 +466,9 @@ def criar_features_interacao(df: pd.DataFrame):
 
 
 
-# -------------------------
+# ===================================================================
 # Preparar dados (encode + normalização + alinhamento treino/teste)
-# -------------------------
+# ===================================================================
 def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
     """
     Prepara dados garantindo alinhamento entre treino e teste,
@@ -525,7 +504,7 @@ def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
     X_test = tratar_valores_ausentes(X_test)
 
     # ==========================================================
-    # 4) ALINHAR COLUNAS ENTRE TREINO E TESTE
+    # 4) Alinhar colunas entre treino e teste
     # ==========================================================
 
     colunas_treino = X_train.columns

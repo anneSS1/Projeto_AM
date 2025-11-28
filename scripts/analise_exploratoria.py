@@ -21,19 +21,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scripts.preprocessamento import gerar_dataset
 
-# ================================================================
-# Função utilitária para exibir no Notebook OU no terminal
-# ================================================================
-def exibir(obj):
-    """Usa display() se existir (notebook), senão usa print()."""
-    try:
-        display(obj)
-    except:
-        print(obj)
-
 
 # ================================================================
-# 1. Carregar dataset + resumo geral
+# Carregar dataset + resumo geral
 # ================================================================
 def carregar_e_resumir(base_path: str) -> pd.DataFrame:
     """
@@ -46,20 +36,20 @@ def carregar_e_resumir(base_path: str) -> pd.DataFrame:
     df = gerar_dataset(base_path)
 
     print("\nPrimeiras linhas do dataset:")
-    exibir(df.head())
+    display(df.head())
 
     print("\nInformações gerais:")
     df_info = df.info()          # info imprime sozinho
     print(df_info)
 
     print("\nEstatísticas descritivas:")
-    exibir(df.describe(include="all"))
+    display(df.describe(include="all"))
 
     return df
 
 
 # ================================================================
-# 2. Medidas descritivas
+# Medidas descritivas
 # ================================================================
 def medidas_descritivas(df: pd.DataFrame):
     """Mostra distribuição das classes e valores ausentes."""
@@ -67,31 +57,26 @@ def medidas_descritivas(df: pd.DataFrame):
 
     if "classe" in df.columns:
         print("\nDistribuição das classes:")
-        exibir(df["classe"].value_counts())
+        display(df["classe"].value_counts())
 
         plt.figure(figsize=(6, 4))
-        # Correção do FutureWarning do Seaborn:
-        #   Antes: sns.countplot(x="classe", data=df, palette="Set2")
-        #   Seaborn mostrou warning dizendo que `palette` só deve ser usado quando houver `hue`, pois a paleta não é aplicada corretamente
-        #   Solução: definir hue="classe"
         ax = sns.countplot(x="classe", data=df, hue="classe", palette="Set2")
-        ax.get_legend().remove()  # Remove legenda duplicada
+        ax.get_legend().remove() 
         plt.title("Distribuição das Classes")
         plt.show()
     else:
         print("Coluna 'classe' não encontrada no dataset.")
 
     print("\nValores ausentes por coluna:")
-    exibir(df.isnull().sum())
+    display(df.isnull().sum())
 
 
 # ================================================================
-# 3. Boxplots e Histogramas
+# Boxplots e Histogramas
 # ================================================================
 def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
     """
-    Gera boxplots e histogramas apenas para os atributos numéricos
-    mais informativos, com gráficos organizados em grade.
+    Gera boxplots e histogramas apenas para os atributos numéricos mais informativos, com gráficos organizados em grade.
     
     Critérios de seleção:
     - Top N atributos com maior variância
@@ -100,15 +85,15 @@ def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
     
     Isso evita gerar dezenas de gráficos irrelevantes e torna a EDA mais objetiva.
     """
-    print("\n--- Boxplots e Histogramas (seleção inteligente) ---")
+    print("\n--- Boxplots e Histogramas ---")
 
-    # ============================
+    # ====================================
     # 1. Selecionar atributos numéricos
-    # ============================
+    # ====================================
     num_df = df.select_dtypes(include=np.number)
 
     if num_df.empty:
-        print("⚠️ Nenhuma coluna numérica encontrada.")
+        print("Nenhuma coluna numérica encontrada.")
         return
 
     # ============================
@@ -117,9 +102,9 @@ def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
     variancias = num_df.var().sort_values(ascending=False)
     top_var = variancias.head(top_n).index.tolist()
 
-    # ============================
+    # ================================================
     # 3. Ranking por relevância com a classe (ANOVA)
-    # ============================
+    # ================================================
     top_fscore = []
     if "classe" in df.columns:
         try:
@@ -139,13 +124,13 @@ def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
     corr_pairs = corr_pairs.sort_values(ascending=False)
     top_corr = list(dict.fromkeys([a for a, b in corr_pairs.index[:top_n]]))
 
-    # ============================
+    # =================================================
     # 5. Seleção final dos atributos mais importantes
-    # ============================
+    # =================================================
     atributos_escolhidos = list(dict.fromkeys(top_var + top_fscore + top_corr))
     atributos_escolhidos = atributos_escolhidos[:top_n]  # limitar ao desejado
 
-    print(f"\n🧠 Atributos selecionados para visualização: {atributos_escolhidos}")
+    print(f"\nAtributos selecionados para visualização: {atributos_escolhidos}")
 
     # -------------------------------------------------------------------------
     # BOX-PLOTS (em grid 2 × N/2)
@@ -198,7 +183,7 @@ def boxplots_e_histogramas(df: pd.DataFrame, top_n=6):
 
 
 # ================================================================
-# 4. Correlação entre atributos
+# Correlação entre atributos
 # ================================================================
 def correlacao_atributos(df: pd.DataFrame):
     """Plota a matriz de correlação para todos os atributos numéricos."""
@@ -207,7 +192,7 @@ def correlacao_atributos(df: pd.DataFrame):
     num_df = df.select_dtypes(include=np.number)
 
     if num_df.empty:
-        print("⚠️ Nenhuma coluna numérica encontrada.")
+        print("Nenhuma coluna numérica encontrada.")
         return
 
     corr = num_df.corr()
@@ -222,37 +207,35 @@ def correlacao_atributos(df: pd.DataFrame):
     corr_pairs = corr_pairs[corr_pairs.abs() < 1]  # remove diagonais
     corr_pairs = corr_pairs.reindex(corr_pairs.abs().sort_values(ascending=False).index)
 
-    print("\n🔗 Maiores correlações:")
-    exibir(corr_pairs.head(10))
+    print("\n Maiores correlações:")
+    display(corr_pairs.head(10))
 
 
 # ================================================================
-# 5. Pairplot com amostra
+# Pairplot com amostra
 # ================================================================
 def pairplot_amostrado(df: pd.DataFrame, n_amostras=300):
     """
-    Gera pairplot com amostra reduzida, selecionando automaticamente
-    os atributos mais relevantes para motivar as features de interação.
+    Gera pairplot com amostra reduzida, selecionando automaticamente os atributos mais relevantes para motivar as features de interação.
     """
 
-    print("\n--- Pairplot Amostrado (focado em interações fisiológicas) ---")
+    print("\n--- Pairplot Amostrado ---")
 
-    # Lista final de atributos relevantes para justificar interações
     atributos_relevantes = []
 
-    # 1) HR / ACC → índice de esforço cardíaco relativo ao movimento
+    # HR / ACC -> índice de esforço cardíaco relativo ao movimento
     if "hr_mean" in df.columns and "acc_energy" in df.columns:
         atributos_relevantes += ["hr_mean", "acc_energy"]
 
-    # 2) ACC × Temp Slope → movimento vs. resposta térmica periférica
+    # ACC x Temp Slope -> movimento vs resposta térmica periférica
     if "acc_energy" in df.columns and "temp_slope" in df.columns:
         atributos_relevantes += ["acc_energy", "temp_slope"]
 
-    # 3) EDA × Temp Mean → ativação autonômica (suor + temperatura)
+    # EDA x Temp Mean -> ativação autonômica (suor + temperatura)
     if "eda_mean" in df.columns and "temp_mean" in df.columns:
         atributos_relevantes += ["eda_mean", "temp_mean"]
 
-    # 4) HRV × EDA std → reatividade simpática
+    # HRV × EDA std -> reatividade simpática
     if "hrv_rmssd" in df.columns and "eda_std" in df.columns:
         atributos_relevantes += ["hrv_rmssd", "eda_std"]
 
@@ -271,7 +254,7 @@ def pairplot_amostrado(df: pd.DataFrame, n_amostras=300):
 
     # Amostragem segura
     sample = df.sample(n=min(n_amostras, len(df)), random_state=42)
-    print(f"Gerando pairplot com {len(sample)} amostras e {len(atributos_relevantes)} atributos...")
+    print(f"--- Gerando pairplot com {len(sample)} amostras e {len(atributos_relevantes)} atributos ---")
 
     sns.pairplot(
         sample[cols],
@@ -283,9 +266,9 @@ def pairplot_amostrado(df: pd.DataFrame, n_amostras=300):
 
 
 
-# ################################################################
-# 6. Análise de séries temporais
-# ################################################################
+# ==============================================================
+# Análise de séries temporais
+# ==============================================================
 def plot_series_temporais(df, colunas):
     """
     Plota as séries temporais em um layout de subplots.
@@ -295,7 +278,7 @@ def plot_series_temporais(df, colunas):
     # Filtra colunas que realmente existem
     cols_validas = [col for col in colunas if col in df.columns]
     if not cols_validas:
-        print("⚠️ Nenhuma das colunas especificadas foi encontrada.")
+        print("Nenhuma das colunas especificadas foi encontrada.")
         return
 
     # Define o layout: número de colunas fixo (2) e calcula as linhas
@@ -324,9 +307,9 @@ def plot_series_temporais(df, colunas):
     plt.show()
 
 
-################################################################
-# 7. Scatter plot duplo
-################################################################
+# ==============================================================
+# Scatter plot duplo
+# ==============================================================
 def scatter_duplo(df: pd.DataFrame, lista_pares: list):
     """
     Gera scatter plots de pares de atributos em um layout de subplots.
@@ -347,7 +330,7 @@ def scatter_duplo(df: pd.DataFrame, lista_pares: list):
 
     for i, (x, y) in enumerate(lista_pares):
         if x not in df.columns or y not in df.columns:
-            print(f"⚠️ Pares {x} ou {y} não encontrados.")
+            print(f"Pares {x} ou {y} não encontrados.")
             continue
             
         sns.scatterplot(
@@ -357,7 +340,7 @@ def scatter_duplo(df: pd.DataFrame, lista_pares: list):
             hue=use_hue, 
             ax=axes[i], 
             alpha=0.6,
-            palette="viridis" if use_hue else None # Exemplo de paleta
+            palette="viridis" if use_hue else None
         )
         axes[i].set_title(f"{x} vs {y}", fontsize=12)
         axes[i].legend(title="Classe")
@@ -366,6 +349,6 @@ def scatter_duplo(df: pd.DataFrame, lista_pares: list):
     for j in range(n_graficos, len(axes)):
         fig.delaxes(axes[j])
 
-    plt.suptitle("Scatter Plots de Pares Fisiológicos (Motivação para Interação)", fontsize=16)
+    plt.suptitle("Scatter Plots de Pares Fisiológicos", fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()

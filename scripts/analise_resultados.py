@@ -21,7 +21,6 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from statsmodels.stats.contingency_tables import mcnemar
 from sklearn.model_selection import learning_curve
 from sklearn.metrics import (
     accuracy_score,
@@ -38,17 +37,16 @@ from sklearn.metrics import (
 from sklearn.preprocessing import label_binarize
 from sklearn.inspection import permutation_importance
 
-sns.set(style="whitegrid")
+sns.set_theme(style="whitegrid")
 
 
 # ======================================================================
-# 1. Avaliação agregada: comparar modelos
+# Avaliação agregada: comparar modelos
 # ======================================================================
 
 def avaliar_modelos_dict(modelos: dict, X_val, y_val, names=None):
     """
-    Avalia vários modelos em um conjunto de validação e retorna um DataFrame
-    com métricas macro: accuracy, precision, recall e f1.
+    Avalia vários modelos em um conjunto de validação e retorna um DataFrame com métricas macro: accuracy, precision, recall e f1.
     """
     resultados = []
     ordem = names if names else modelos.keys()
@@ -69,11 +67,13 @@ def avaliar_modelos_dict(modelos: dict, X_val, y_val, names=None):
 
 
 # ======================================================================
-# 2. Relatórios detalhados por modelo
+# Relatórios detalhados por modelo
 # ======================================================================
 
 def mostrar_classification_reports(modelos: dict, X_val, y_val, names=None):
-    """Imprime o classification_report para cada modelo."""
+    """
+    Imprime o classification_report para cada modelo.
+    """
     ordem = names if names else modelos.keys()
 
     for nome in ordem:
@@ -105,7 +105,7 @@ def tabela_por_classe(model, X_val, y_val, labels=None):
 
 
 # ======================================================================
-# 3. Visualizações: métricas e matrizes de confusão
+# Visualizações: métricas e matrizes de confusão
 # ======================================================================
 
 def plot_metric_bars(df_metrics: pd.DataFrame, metrics=("accuracy", "f1_macro"), figsize=(8, 5)):
@@ -154,8 +154,7 @@ def plot_confusion_matrix_model(model, X_val, y_val, labels=None, normalize=Fals
     plt.show()
 
 
-def comparar_modelos_plot_confusao(modelos: dict, X_val, y_val, labels=None,
-                                   max_per_row=2, normalize=False):
+def comparar_modelos_plot_confusao(modelos: dict, X_val, y_val, labels=None, max_per_row=2, normalize=False):
     """
     Plota várias matrizes de confusão em grid para comparar modelos visualmente.
     """
@@ -186,15 +185,12 @@ def comparar_modelos_plot_confusao(modelos: dict, X_val, y_val, labels=None,
 
 
 # ======================================================================
-# 4. Curva de aprendizado
+# Curva de aprendizado
 # ======================================================================
 
-def plot_learning_curve_model(estimator, X, y, cv=5,
-                              train_sizes=np.linspace(0.1, 1.0, 5),
-                              figsize=(8, 5)):
+def plot_learning_curve_model(estimator, X, y, cv=5, train_sizes=np.linspace(0.1, 1.0, 5), figsize=(8, 5)):
     """
-    Gera curva de aprendizado de um modelo (train x validation accuracy).
-    Útil para detectar overfitting ou subfitting.
+    Gera curva de aprendizado de um modelo.
     """
     train_sizes, train_scores, val_scores = learning_curve(
         estimator,
@@ -230,133 +226,7 @@ def plot_learning_curve_model(estimator, X, y, cv=5,
 
 
 # ======================================================================
-# 5. Teste estatístico (McNemar)
-# ======================================================================
-
-def teste_mcnemar(model1, model2, X_val, y_val):
-    """
-    Aplica o teste de McNemar para avaliar se dois classificadores
-    têm diferença estatisticamente significativa.
-    Retorna o p-valor.
-    """
-    y1 = model1.predict(X_val)
-    y2 = model2.predict(X_val)
-
-    # construir tabela 2x2: [ (acerto/acerto), (acerto/erro); (erro/acerto), (erro/erro) ]
-    # a convenção usada abaixo conta erros
-    tabela = [[0, 0], [0, 0]]
-
-    for y_true, a, b in zip(y_val, y1, y2):
-        tabela[int(a != y_true)][int(b != y_true)] += 1
-
-    result = mcnemar(tabela, exact=False, correction=True)
-    return result.pvalue
-
-
-# ======================================================================
-# 6. Curvas Precision-Recall e ROC multiclass
-# ======================================================================
-
-def plot_precision_recall_multiclass(models, X, y, label_encoder=None, figsize=(8, 6)):
-    """
-    Plota curvas Precision-Recall para cada classe (multiclass).
-    models: dict[name] = model OR model (single)
-    Se for dict, plota para cada modelo (uma figura por modelo).
-    label_encoder: opcional, para obter nomes das classes; caso contrário usa labels numéricos.
-    """
-    # helper interno: processa um par (name, model)
-    def _plot_for(name, model):
-        y_true = y
-        classes = np.unique(y_true)
-        n_classes = len(classes)
-        # binarizar rótulos
-        y_bin = label_binarize(y_true, classes=classes)
-
-        # tentar obter probabilidades
-        if hasattr(model, "predict_proba"):
-            y_score = model.predict_proba(X)
-        else:
-            # fallback: determinístico (one-hot da predição)
-            preds = model.predict(X)
-            y_score = np.zeros((len(preds), n_classes))
-            for i, p in enumerate(preds):
-                y_score[i, p] = 1.0
-
-        plt.figure(figsize=figsize)
-        for i, cls in enumerate(classes):
-            precision, recall, _ = precision_recall_curve(y_bin[:, i], y_score[:, i])
-            ap = average_precision_score(y_bin[:, i], y_score[:, i])
-            plt.plot(recall, precision, lw=2, label=f"classe {cls} (AP={ap:.2f})")
-
-        plt.xlabel("Recall")
-        plt.ylabel("Precision")
-        plt.title(f"Precision-Recall Curve — {name}")
-        plt.legend(loc="best")
-        plt.grid(True)
-        plt.show()
-
-    if isinstance(models, dict):
-        for name, model in models.items():
-            _plot_for(name, model)
-    else:
-        _plot_for("model", models)
-
-
-def plot_roc_multiclass(models, X, y, label_encoder=None, figsize=(8, 6)):
-    """
-    Plota ROC multiclass (curvas por classe e AUC macro) para cada modelo.
-    """
-    def _plot_for(name, model):
-        y_true = y
-        classes = np.unique(y_true)
-        n_classes = len(classes)
-        y_bin = label_binarize(y_true, classes=classes)
-
-        # obter probabilidades / scores
-        if hasattr(model, "predict_proba"):
-            y_score = model.predict_proba(X)
-        else:
-            # usar predição dura como fallback
-            preds = model.predict(X)
-            y_score = np.zeros((len(preds), n_classes))
-            for i, p in enumerate(preds):
-                y_score[i, p] = 1.0
-
-        # curvas por classe
-        plt.figure(figsize=figsize)
-        aucs = []
-        for i, cls in enumerate(classes):
-            fpr, tpr, _ = roc_curve(y_bin[:, i], y_score[:, i])
-            auc_val = auc(fpr, tpr)
-            aucs.append(auc_val)
-            plt.plot(fpr, tpr, label=f"Classe {cls} (AUC={auc_val:.2f})")
-
-        # micro-average (opcional)
-        # construir fpr/tpr micro
-        try:
-            fpr_micro, tpr_micro, _ = roc_curve(y_bin.ravel(), y_score.ravel())
-            auc_micro = auc(fpr_micro, tpr_micro)
-            plt.plot(fpr_micro, tpr_micro, linestyle="--", label=f"micro (AUC={auc_micro:.2f})")
-        except Exception:
-            pass
-
-        plt.plot([0, 1], [0, 1], 'k--', alpha=0.4)
-        plt.xlabel("False Positive Rate")
-        plt.ylabel("True Positive Rate")
-        plt.title(f"ROC Multiclass — {name}")
-        plt.legend(loc="lower right")
-        plt.grid(True)
-        plt.show()
-
-    if isinstance(models, dict):
-        for name, model in models.items():
-            _plot_for(name, model)
-    else:
-        _plot_for("model", models)
-
-
-# ======================================================================
-# 7. Importância de features
+# Importância de features
 # ======================================================================
 
 def importancia_features_modelo(model, X, y, feature_names=None, top_k=20, random_state=42):
@@ -415,7 +285,7 @@ def plot_importancia(df_imp, figsize=(8, 6), top_k=15):
 
 
 # ======================================================================
-# 8. Análise de erros / Confusões detalhadas
+# Análise de erros / Confusões detalhadas
 # ======================================================================
 
 def analise_erros_por_classe(model, X_val, y_val, feature_df=None, labels=None):

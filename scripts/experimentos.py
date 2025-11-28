@@ -30,7 +30,7 @@ from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 
 # ===================================================================
-# 1. Treinamento dos modelos (BÁSICOS / BASELINES)
+# Treinamento dos modelos (BÁSICOS / BASELINES)
 # ===================================================================
 
 def treinar_knn(X_train, y_train, k=7):
@@ -47,7 +47,7 @@ def treinar_naive_bayes(X_train, y_train):
     """
     Treina Naive Bayes (baseline).
     """
-    print("\n--- Treinando Naive Bayes (Gaussian) ---")
+    print("\n--- Treinando Naive Bayes ---")
     model = GaussianNB()
     model.fit(X_train, y_train)
     return model
@@ -60,7 +60,6 @@ def treinar_regressao_logistica(X_train, y_train):
     print("\n--- Treinando Regressão Logística ---")
     model = LogisticRegression(
         max_iter=1000,
-        multi_class="multinomial",
         solver="lbfgs",
         random_state=42
     )
@@ -104,7 +103,7 @@ def treinar_random_forest(X_train, y_train):
     """
     Random Forest com parâmetros padrão (baseline).
     """
-    print("\n--- Treinando Random Forest ---")
+    print("\n--- Treinando Random Forest (baseline) ---")
     model = RandomForestClassifier(
         n_estimators=100,
         random_state=42,
@@ -116,7 +115,7 @@ def treinar_random_forest(X_train, y_train):
 
 def treinar_xgboost(X_train, y_train):
     """
-    XGBoost baseline — forte para dados tabulares.
+    XGBoost com parâmetros padrão (baseline).
     """
     print("\n--- Treinando XGBoost (baseline) ---")
 
@@ -137,7 +136,7 @@ def treinar_xgboost(X_train, y_train):
 
 
 # ===================================================================
-# 2. AVALIAÇÃO VIA VALIDAÇÃO CRUZADA
+# AVALIAÇÃO VIA VALIDAÇÃO CRUZADA
 # ===================================================================
 
 def avaliar_com_crossval(model, X, y, cv=5, scoring="accuracy"):
@@ -145,7 +144,7 @@ def avaliar_com_crossval(model, X, y, cv=5, scoring="accuracy"):
     Executa validação cruzada (k-fold).
     Retorna os scores obtidos.
     """
-    print(f"\n--- Avaliação com Cross-Validation ({cv}-fold) ---")
+    print(f"\n--- Avaliação com Validação Cruzada ({cv}-fold) ---")
     scores = cross_val_score(model, X, y, cv=cv, scoring=scoring)
     print("Scores individuais:", scores)
     print("Média:", scores.mean())
@@ -155,7 +154,7 @@ def avaliar_com_crossval(model, X, y, cv=5, scoring="accuracy"):
 
 
 # ===================================================================
-# 3. MODELOS OTIMIZADOS COM GRID SEARCH
+# MODELOS OTIMIZADOS COM GRID SEARCH
 # ===================================================================
 
 def treinar_svm_otimizado(X_train, y_train):
@@ -290,61 +289,48 @@ def treinar_xgboost_otimizado(X_train, y_train):
 
 
 # ===================================================================
-# 4. Geração do arquivo de submissão
+# Geração do arquivo de submissão
 # ===================================================================
 
 def gerar_submissao(model, X_test, test_ids, label_encoder, base_path="dataset",
                     nome_arquivo="submission.csv"):
     """
-    Gera submissão no formato exigido, corrigindo a ordem das colunas
-    para: 0=STRESS, 1=AEROBIC, 2=ANAEROBIC.
+    Gera submissão no formato: 0=STRESS, 1=AEROBIC, 2=ANAEROBIC.
     """
     print("\n--- Gerando arquivo de submissão ---")
 
-    # 1. Obter probabilidades brutas do modelo
-    # (A ordem aqui segue o label_encoder: geralmente alfabética)
+    # obter probabilidades brutas do modelo
     if hasattr(model, "predict_proba"):
         y_pred_proba = model.predict_proba(X_test)
     else:
-        # Fallback para modelos sem predict_proba (gera 0 ou 1)
         preds = model.predict(X_test)
         n_classes_model = len(label_encoder.classes_)
         y_pred_proba = np.zeros((len(preds), n_classes_model))
         for i, p in enumerate(preds):
             y_pred_proba[i, p] = 1.0
 
-    # 2. Descobrir onde está cada classe no modelo (índices reais)
-    # O LabelEncoder geralmente ordena: 0:AEROBIC, 1:ANAEROBIC, 2:STRESS
+
     classes_modelo = list(label_encoder.classes_)
     
-    try:
-        idx_stress = classes_modelo.index("STRESS")
-        idx_aerobic = classes_modelo.index("AEROBIC")
-        idx_anaerobic = classes_modelo.index("ANAEROBIC")
-    except ValueError as e:
-        print(f"Erro Crítico: Classes esperadas não encontradas no encoder. Classes disponíveis: {classes_modelo}")
-        raise e
-
-    # 3. Montar o DataFrame mapeando para as colunas EXIGIDAS
-    # Exigência: Predict_0 = STRESS, Predict_1 = AEROBIC, Predict_2 = ANAEROBIC
+    
+    idx_stress = classes_modelo.index("STRESS")
+    idx_aerobic = classes_modelo.index("AEROBIC")
+    idx_anaerobic = classes_modelo.index("ANAEROBIC")
+    
     submission = pd.DataFrame()
     submission["Id"] = test_ids
     
-    # Mapeamento explícito
-    submission["Predicted_0"] = y_pred_proba[:, idx_stress]    # Coluna do STRESS
-    submission["Predicted_1"] = y_pred_proba[:, idx_aerobic]   # Coluna do AEROBIC
-    submission["Predicted_2"] = y_pred_proba[:, idx_anaerobic] # Coluna do ANAEROBIC
+    submission["Predicted_0"] = y_pred_proba[:, idx_stress] # STRESS
+    submission["Predicted_1"] = y_pred_proba[:, idx_aerobic] # AEROBIC
+    submission["Predicted_2"] = y_pred_proba[:, idx_anaerobic] # ANAEROBIC
 
-    # 4. Normalização linha a linha (Garantir soma 1.0)
     cols_pred = ["Predicted_0", "Predicted_1", "Predicted_2"]
     submission[cols_pred] = submission[cols_pred].div(submission[cols_pred].sum(axis=1), axis=0)
 
-    # 5. Salvar
     output_path = os.path.join(base_path, nome_arquivo)
     submission.to_csv(output_path, index=False, float_format="%.6f")
 
-    print(f"\n✅ Submissão salva em: {output_path}")
-    print("Ordem das colunas verificada: 0=STRESS, 1=AEROBIC, 2=ANAEROBIC")
+    print(f"\nSubmissão salva em: {output_path}")
     print(submission.head())
 
     return submission
