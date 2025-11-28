@@ -355,15 +355,20 @@ def tratar_valores_ausentes(df: pd.DataFrame, strategy="median"):
             out[col] = pd.to_numeric(out[col])
         except (ValueError, TypeError):
             pass
+        # dado numérico
         if pd.api.types.is_numeric_dtype(out[col]):
             if strategy == "median":
+                # calcula mediana
                 valor = out[col].median()
             else:
+                # se nao calcula média
                 valor = out[col].mean()
             
             out[col] = out[col].fillna(valor)
             
+        # dado categórico
         else:
+            # calcula moda
             moda = out[col].mode()
             valor = moda[0] if not moda.empty else "Desconhecido"
             
@@ -379,8 +384,10 @@ def remover_atributos_redundantes(df: pd.DataFrame):
     Remove colunas que são linearmente dependentes ou redundantes baseadas na análise de correlação (Heatmap/Pairplot).
     """
 
+    # lista de colunas para remover
     cols_to_drop = ['eda_tonic_mean','acc_mag_mean']
     
+    # remove as colunas
     df_out = df.drop(columns=cols_to_drop, errors='ignore')
     
     print(f"--- Atributos removidos: {cols_to_drop} ---")
@@ -399,6 +406,7 @@ def aplicar_transformacao_log(df: pd.DataFrame):
     """
     df_out = df.copy()
 
+    # lista de colunas para aplicar a transformação log
     cols_to_log = [
         'acc_energy', 
         'acc_mag_std', 
@@ -428,7 +436,10 @@ def limitar_outliers_zscore(df: pd.DataFrame, zmax=3.0):
     num = df_new.select_dtypes(include=[np.number])
 
     for col in num.columns:
+        # calculo do z-score
         col_z = (df_new[col] - df_new[col].mean()) / df_new[col].std()
+
+        # aplica limite
         df_new[col] = np.where(col_z > zmax, df_new[col].mean() + zmax * df_new[col].std(), np.where(col_z < -zmax, df_new[col].mean() - zmax * df_new[col].std(), df_new[col]))
     return df_new
 
@@ -480,9 +491,7 @@ def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
     df_train = df_train.copy()
     df_test = df_test.copy()
 
-    # ==========================================================
-    # 1) Label Encoding da classe
-    # ==========================================================
+    # label encode da classe
     if "classe" in df_train.columns:
         le = LabelEncoder()
         y_train = le.fit_transform(df_train["classe"].astype(str))
@@ -490,47 +499,38 @@ def preparar_dados(df_train: pd.DataFrame, df_test: pd.DataFrame):
         le = None
         y_train = None
 
-    # ==========================================================
-    # 2) Remover Id e classe
-    # ==========================================================
+    # remove id e classe
     X_train = df_train.drop(columns=["Id", "classe"], errors="ignore").copy()
     X_test = df_test.drop(columns=["Id", "classe"], errors="ignore").copy()
     test_ids = df_test["Id"].copy() if "Id" in df_test.columns else None
 
-    # ==========================================================
-    # 3) Tratar valores ausentes antes do alinhamento
-    # ==========================================================
+    # trata valor ausente
     X_train = tratar_valores_ausentes(X_train)
     X_test = tratar_valores_ausentes(X_test)
 
-    # ==========================================================
-    # 4) Alinhar colunas entre treino e teste
-    # ==========================================================
-
+    # alinha colunas entre treino e teste
     colunas_treino = X_train.columns
 
-    # Adicionar no teste colunas que só existem no treino
+    # adiciona no teste colunas que só existem no treino
     for col in colunas_treino:
         if col not in X_test.columns:
-            X_test[col] = 0   # ou mediana: X_train[col].median()
+            X_test[col] = 0
 
-    # Remover do teste colunas que não existem no treino
+    # remove do teste colunas que não existem no treino
     for col in X_test.columns:
         if col not in colunas_treino:
             X_test = X_test.drop(columns=[col])
 
-    # Reordenar o teste
+    # reordena teste
     X_test = X_test[colunas_treino]
 
-    # ==========================================================
-    # 5) Normalizar numéricas com StandardScaler
-    # ==========================================================
+    # normaliza  com StandardScaler
     scaler = StandardScaler()
 
     X_train_vals = scaler.fit_transform(X_train)
     X_test_vals = scaler.transform(X_test)
 
-    # Reconstruir DataFrames padronizados
+    # reconstroi df padronizados
     X_train_scaled = pd.DataFrame(X_train_vals, columns=colunas_treino, index=X_train.index)
     X_test_scaled = pd.DataFrame(X_test_vals,  columns=colunas_treino, index=X_test.index)
 

@@ -307,19 +307,21 @@ def gerar_submissao(model, X_test, test_ids, label_encoder, base_path="dataset",
         n_classes_model = len(label_encoder.classes_)
         y_pred_proba = np.zeros((len(preds), n_classes_model))
         for i, p in enumerate(preds):
+            # fallback manual
             y_pred_proba[i, p] = 1.0
 
-
+    # recupera index
     classes_modelo = list(label_encoder.classes_)
-    
     
     idx_stress = classes_modelo.index("STRESS")
     idx_aerobic = classes_modelo.index("AEROBIC")
     idx_anaerobic = classes_modelo.index("ANAEROBIC")
     
+    # montagem dataframe
     submission = pd.DataFrame()
     submission["Id"] = test_ids
     
+    # atribui index
     submission["Predicted_0"] = y_pred_proba[:, idx_stress] # STRESS
     submission["Predicted_1"] = y_pred_proba[:, idx_aerobic] # AEROBIC
     submission["Predicted_2"] = y_pred_proba[:, idx_anaerobic] # ANAEROBIC
@@ -327,6 +329,7 @@ def gerar_submissao(model, X_test, test_ids, label_encoder, base_path="dataset",
     cols_pred = ["Predicted_0", "Predicted_1", "Predicted_2"]
     submission[cols_pred] = submission[cols_pred].div(submission[cols_pred].sum(axis=1), axis=0)
 
+    # salvar
     output_path = os.path.join(base_path, nome_arquivo)
     submission.to_csv(output_path, index=False, float_format="%.6f")
 
